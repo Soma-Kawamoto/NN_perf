@@ -32,7 +32,7 @@ PERFORM_TRAINING = True
 mat_name = "50A470"
 target_freq = 20
 # --- NN Architecture ---
-HIDDEN_LAYERS = [128, 128]
+HIDDEN_LAYERS = [2048]
 ACTIVATION_FUNC = nn.ReLU()
 # --- Training Parameters ---
 LEARNING_RATE = 0.0002
