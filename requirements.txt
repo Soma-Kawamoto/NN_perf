@@ -1,0 +1,9 @@
+numpy
+pandas
+torch
+scikit-learn
+openpyxl
+matplotlib
+japanize-matplotlib
+pytest
+pytest-mock

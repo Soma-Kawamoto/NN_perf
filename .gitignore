@@ -1,0 +1,95 @@
+# ==============================================================================
+# Python
+# ==============================================================================
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# PyInstaller
+*.manifest
+*.spec
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+.hypothesis/
+.pytest_cache/
+
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# IDE / Editor specific
+.idea/
+.vscode/
+*.swp
+*~
+
+# ==============================================================================
+# Project-specific files (Generated data and raw data)
+# ==============================================================================
+# スクリプトによって生成されるデータフォルダを無視します。
+# 元データ(例: 1.raw_data)やソースコードはGitの管理対象とします。
+/1.Training Data Folder/assets/2.*/
+/1.Training Data Folder/assets/3.*/
+/1.Training Data Folder/assets/4.*/
+/1.Training Data Folder/assets/5.*/
+/1.Training Data Folder/assets/6.*/
+/1.Training Data Folder/assets/7.*/
+/1.Training Data Folder/assets/8.*/
+/1.Training Data Folder/assets/9.*/
+/1.Training Data Folder/assets/10.*/
+/1.Training Data Folder/assets/
+/2.Normal Magnetization Curve Extraction Folder/assets
+/2.Normal Magnetization Curve Extraction Folder/assets/2.*/
+
+# ==============================================================================
+# Configuration files
+# ==============================================================================
+# 各環境で異なる設定ファイルをGitの追跡対象から除外します。
+/2.Normal Magnetization Curve Extraction Folder/config/
+
+/3.Answer/
+/4.Answer (Bayesian_optimization)/
+/3.Answer/hyperparameters/

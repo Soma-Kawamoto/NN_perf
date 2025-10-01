@@ -1,0 +1,163 @@
+
+---
+### LLMへの指示プロンプト（プレーンテキスト）
+
+# 指示:
+以下の詳細な仕様に基づいて、Pythonスクリプトを一行ずつ正確に作成してください。スクリプトの目的は、ガウス過程回帰（GPR）を用いてB-H曲線をモデル化し、ベイズ最適化（アクティブラーニング）によってモデルの回帰精度を向上させることです。変数名、関数名、定数、コメント、ロジックの順序を完全に再現してください。
+
+---
+### **スクリプト仕様**
+
+#### **1. ヘッダーとエンコーディング**
+- スクリプトの1行目は `#!/usr/bin/env python3` とする。
+- スクリプトの2行目は `# -*- coding: utf-8 -*-` とする。
+- スクリプトの3行目から5行目にかけて、以下のdocstringを記述する。
+  """
+  ガウス過程回帰 (GPR) による B-H ヒステリシス回帰スクリプト
+  【v30：ベイズ最適化の探索ロジックを修正】
+  """
+
+#### **2. ライブラリのインポート**
+以下のライブラリをすべてインポートする。
+- `os`
+- `numpy as np`
+- `pandas as pd`
+- `matplotlib.pyplot as plt`
+- `GPy`
+- `openpyxl.chart` から `ScatterChart`, `Reference`, `Series`
+- `openpyxl.chart.shapes` から `GraphicalProperties`
+- `openpyxl.drawing.line` から `LineProperties`
+- `japanize_matplotlib`
+- `datetime` から `datetime`
+- `scipy.stats` から `norm`
+
+#### **3. グローバル設定**
+- `plt.rcParams["font.family"]` を `"Times New Roman"` に設定する。
+- `plt.rcParams["font.size"]` を `20` に設定する。
+- `# ==============================================================================` と `# ユーザー設定箇所` というコメントセクションを作成する。
+
+#### **4. ユーザー設定項目**
+以下のすべての定数と変数を、指定された値で定義する。
+
+- **プロット表示設定:**
+  - `ENABLE_PLOTTING = True` (コメント: Trueにすると全グラフを表示、Falseにすると全グラフを非表示)
+
+- **動作モード設定:**
+  - `PERFORM_TRAINING = True`
+
+- **ベイズ最適化の設定:**
+  - `USE_BAYESIAN_OPTIMIZATION = True`
+  - `BO_ITERATIONS = 5`
+  - `ACQUISITION_FUNCTION = 'UCB'`
+  - `UCB_KAPPA = 2.5`
+
+- **モデルと学習データ、最適化の設定:**
+  - `mat_name = "50A470"`
+  - `target_freq = 20`
+  - `kernel_type = "Matern52"`
+  - `train_amp = list(np.round(np.arange(0.5, 1.8 + 1e-8, 0.1), 1))`
+  - `OPTIMIZER = "lbfgsb"`
+  - `MAX_ITERS = 1000`
+  - `NUM_RESTARTS = 10`
+
+- **回帰（予測）対象の設定:**
+  - `Bmreg_min = 0.1`
+  - `Bmreg_max = 1.8`
+  - `step = 0.1`
+
+- **パス設定:**
+  - `base_dir = os.path.dirname(__file__)`
+  - `akima_excel_path` を `os.path.join` で `base_dir` と `"2.Normal Magnetization Curve Extraction Folder"`, `"2.Akima spline interpolation"`, `f"Bm-Hb Curve_akima_{mat_name}_{target_freq}hz.xlsx"` を結合して作成する。
+  - `initial_input_base` を `os.path.join` で `base_dir` と `"1.Training Data Folder"`, `"6.Downsampling"` を結合して作成する。
+  - `original_data_base` を `os.path.join` で `base_dir` と `"1.Training Data Folder"`, `"5.Ascending branch of the hysteresis loop"` を結合して作成する。
+  - `output_base` を `os.path.join` で `base_dir` と `"3.Answer"`, `"regression_results"` を結合して作成する。
+  - `hyper_param_dir` を `os.path.join` で `base_dir` と `"3.Answer"`, `"hyperparameters"` を結合して作成する。
+  - `truth_data_base` を `os.path.join` で `base_dir` と `"1.Training Data Folder"`, `"7.reference data"` を結合して作成する。
+  - `hyper_param_path` を `os.path.join` で `hyper_param_dir` と `f"hyperparamater_{mat_name}_{target_freq}hz_{kernel_type}.xlsx"` を結合して作成する。
+  - `truth_data_path` を `os.path.join` で `truth_data_base` と `f"summary_{mat_name}_{step}.xlsx"` を結合して作成する。
+
+#### **5. 関数定義**
+`# ==============================================================================` と `# プログラム本体` というコメントセクションを作成し、以下の関数を定義する。
+
+- **`create_info_df(amp_value=None)`:**
+  - 実行日時、材料名、周波数、カーネル、最適化手法などの情報を辞書に格納し、pandas DataFrameとして返す。
+  - `amp_value`が指定された場合は、その情報も追加する。
+
+- **`add_comparison_chart_to_sheet(ws, df_len)`:**
+  - `openpyxl`を使い、ExcelワークシートにGPR予測と参照データを比較する散布図グラフを追加する。
+  - グラフタイトル、軸ラベル、スタイル、系列（GPR Regressionは赤線、Referenceは青線）を詳細に設定する。
+
+- **`calculate_acquisition_function(model, X, f_max, acq_type='UCB', kappa=2.5)`:**
+  - GPRモデルから予測平均 `mean` と分散 `var` を取得する。
+  - `acq_type` が `'UCB'` の場合、`np.sqrt(var)`、つまり標準偏差 `std` のみを返す。
+  - `acq_type` が `'EI'` の場合、期待改善量 (Expected Improvement) を計算して返す。
+
+- **`find_closest_point_in_original_data(b_target, df_original)`:**
+  - `df_original` DataFrameの 'B' 列の中から、`b_target` に最も値が近い行を探し、その行全体を返す。
+
+- **プロット関数群:**
+  - `# --- プロット関数群 ---` というコメントを追加する。
+
+  - **`plot_current_regression(model, title)`:**
+    - docstring: "現在のGPRモデルの予測結果をプロットする"
+    - B-H曲線の予測結果をプロットする。予測平均を赤線で、予測の標準偏差を青い影（`fill_betweenx`）で描画する。
+    - `ENABLE_PLOTTING` が `True` の場合のみ `plt.show()` を実行する。
+
+  - **`plot_acquisition_surface_3d(model, f_max, title)`:**
+    - docstring: "3次元の獲得関数をサーフェスプロットする"
+    - 獲得関数を3Dサーフェスプロットとして描画する。
+    - `ENABLE_PLOTTING` が `True` の場合のみ `plt.show()` を実行する。
+
+  - **`plot_marginal_acquisition(model, f_max, original_data_cache, title, next_points)`:**
+    - docstring: "各振幅で周辺化した1次元の獲得関数と、次に選ばれた点をプロットする"
+    - 各振幅 `amp` ごとに、獲得関数の値をx軸、Bの値をy軸としてプロットする。
+    - 次に選択された点を丸マーカーで重ねてプロットする。
+    - `ENABLE_PLOTTING` が `True` の場合のみ `plt.show()` を実行する。
+
+  - **`plot_training_data_with_bo(initial_X, initial_Y, akima_points, bo_points_all, bo_points_current, title)`:**
+    - docstring: "学習データとBOで追加された点をプロットする"
+    - 初期学習点、Akima補間点、過去のBO追加点、現在のBO追加点を色やマーカーを変えて一つの散布図にプロットする。
+    - `bo_points_all` が空でない場合、`bo_X_all[:, 0, 0]` を使ってプロットする。
+    - `bo_points_current` が空でない場合、`bo_X_current[:, 0, 0]` を使ってプロットする。
+    - `ENABLE_PLOTTING` が `True` の場合のみ `plt.show()` を実行する。
+
+- **`main()`:**
+  - docstring: "メインの実行関数。ベイズ最適化のループを管理する。"
+  - **ステップ1: 初期データの準備:**
+    - 初期学習データ `X_list`, `Y_list` を作成する。原点(0,0)を追加する。
+    - `train_amp` をループし、対応するExcelファイルからダウンサンプリングされたB-Hデータを読み込み、リストに追加する。
+    - Akima補間データを読み込み、ヒステリシスの先端点をリストに追加する。
+    - `X_train_initial`, `Y_train_initial` をNumpy配列に変換する。
+  - **ステップ1.5: 初期データのプロット:**
+    - `plot_training_data_with_bo` を呼び出し、初期状態のデータをプロットする。このとき `bo_points_all` と `bo_points_current` には空リストを渡す。
+  - **ステップ2: GPRモデルの初期学習:**
+    - `GPy.kern.Matern52` カーネルと `GPy.models.GPRegression` モデルを作成する。
+    - `model.optimize_restarts` を実行し、モデルのハイパーパラメータを最適化する。
+  - `USE_BAYESIAN_OPTIMIZATION` が `False` ならば、ここで処理を終了する。
+  - **ステップ3: ベイズ最適化ループ:**
+    - 元データを `original_data_cache` 辞書にキャッシュする。
+    - `BO_ITERATIONS` の回数だけループを実行する。
+    - **ループ内部の処理:**
+      1.  現在の回帰モデルと獲得関数をプロットする。
+      2.  `current_iteration_points` リストを初期化する。
+      3.  `train_amp` をループする。
+      4.  **各振幅 `amp` での処理:**
+         - `df_original` (元のB-Hデータ) を取得する。
+         - `df_search_space` (まだ学習に使っていない点) を作成する。
+         - `df_search_space` が空ならスキップする。
+         - **点選択ロジック:**
+           a. `df_original` のBの最小値・最大値から、解像度200の連続的な探索空間 `b_continuous_space` を作成する。
+           b. この連続空間上で獲得関数を計算する。
+           c. 獲得関数が最大となる `b_ideal` (理想のB値) を見つける。
+           d. `find_closest_point_in_original_data` 関数を使い、`df_search_space` の中から `b_ideal` に最も近い実在する点の行 `closest_point_row` を見つける。
+           e. `closest_point_row` から `b_next` と `h_next` を抽出する。
+         - 新しい点 `(X_new, Y_new)` を作成し、`current_iteration_points` に追加する。
+      5.  ループ終了後、`plot_marginal_acquisition` と `plot_training_data_with_bo` を呼び出して、現在のイテレーションの結果をプロットする。
+      6.  `current_iteration_points` の中身をモデルに追加 (`model.set_XY`) し、`bo_added_points` にも追加する。
+      7.  `model.optimize` を実行し、モデルを再学習させる。
+  - **ループ終了後:**
+    - 最終的な学習データ点数を表示する。
+    - `plot_current_regression` を呼び出し、最終的な回帰結果をプロットする。
+
+#### **6. スクリプト実行ブロック**
+- `if __name__ == "__main__":` ブロックを作成し、その中で `main()` 関数を呼び出す。
