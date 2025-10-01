@@ -39,6 +39,11 @@ def import_script_from_src(script_name, module_name_override=None):
     return module
 
 @pytest.fixture(scope="session")
+def nn_module():
+    """1. NN.py をモジュールとして提供するフィクスチャ"""
+    return import_script_from_src("1. NN.py", "nn_script")
+
+@pytest.fixture(scope="session")
 def gpr_regression_module():
     """1. GPR Regression.py をモジュールとして提供するフィクスチャ"""
     return import_script_from_src("1. GPR Regression.py", "gpr_regression")

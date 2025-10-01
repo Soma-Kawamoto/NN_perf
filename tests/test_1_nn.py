@@ -5,11 +5,6 @@ import numpy as np
 import configparser
 import os
 
-# テスト対象のスクリプトからクラスや関数をインポート
-# sys.path.appendを追加して、srcフォルダ内のモジュールを読み込めるようにする
-import sys
-sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'src'))
-from src import nn_script_for_test as nn_script
 
 # ==============================================================================
 # 1. 補助関数のテスト
@@ -21,25 +16,25 @@ from src import nn_script_for_test as nn_script
     ("tanh", nn.Tanh),
     ("sigmoid", nn.Sigmoid),
 ])
-def test_get_activation_function_valid(name, expected_class):
+def test_get_activation_function_valid(nn_module, name, expected_class):
     """
     get_activation_functionが有効な文字列に対して正しいクラスを返すことをテストする。
     """
-    activation_func = nn_script.get_activation_function(name)
+    activation_func = nn_module.get_activation_function(name)
     assert isinstance(activation_func, expected_class)
 
-def test_get_activation_function_invalid():
+def test_get_activation_function_invalid(nn_module):
     """
     get_activation_functionが無効な文字列に対してValueErrorを発生させることをテストする。
     """
     with pytest.raises(ValueError, match="未対応の活性化関数です: invalid_func"):
-        nn_script.get_activation_function("invalid_func")
+        nn_module.get_activation_function("invalid_func")
 
-def test_rmseloss():
+def test_rmseloss(nn_module):
     """
     RMSELossクラスが正しくRMSEを計算することをテストする。
     """
-    loss_func = nn_script.RMSELoss()
+    loss_func = nn_module.RMSELoss()
     y_hat = torch.tensor([1.0, 2.0, 3.0])
     y_true = torch.tensor([1.5, 2.5, 3.5])
     # 期待値: sqrt( ( (1.0-1.5)^2 + (2.0-2.5)^2 + (3.0-3.5)^2 ) / 3 )
@@ -52,7 +47,7 @@ def test_rmseloss():
 # 2. モデルクラスのテスト
 # ==============================================================================
 
-def test_fullyconnectednn_creation():
+def test_fullyconnectednn_creation(nn_module):
     """
     FullyConnectedNNモデルが指定された構造で正しく構築されることをテストする。
     """
@@ -61,7 +56,7 @@ def test_fullyconnectednn_creation():
     hidden_layers = [64, 32]
     activation_func = nn.ReLU()
 
-    model = nn_script.FullyConnectedNN(input_size, output_size, hidden_layers, activation_func)
+    model = nn_module.FullyConnectedNN(input_size, output_size, hidden_layers, activation_func)
 
     # ネットワークの層の数を確認
     # Linear -> ReLU -> Linear -> ReLU -> Linear
@@ -84,7 +79,7 @@ def test_fullyconnectednn_creation():
 # ==============================================================================
 
 @pytest.fixture
-def mock_config_file(monkeypatch):
+def mock_config_file(monkeypatch, nn_module):
     """
     configparserの読み込みをモックし、テスト用の設定値を返すfixture。
     """
@@ -98,24 +93,24 @@ def mock_config_file(monkeypatch):
     # configparser.ConfigParser.read を何もしないように上書き
     def mock_read(*args, **kwargs):
         pass
-    monkeypatch.setattr(configparser.ConfigParser, "read", mock_read)
+    monkeypatch.setattr(nn_module.configparser.ConfigParser, "read", mock_read)
 
     # スクリプト内で configparser.ConfigParser() が呼ばれたら、
     # このテスト用に作成したconfigオブジェクトを返すように設定
-    monkeypatch.setattr(configparser, "ConfigParser", lambda: config)
+    monkeypatch.setattr(nn_module.configparser, "ConfigParser", lambda: config)
 
-def test_config_loading(mock_config_file):
+def test_config_loading(mock_config_file, nn_module):
     """
     モックされた設定ファイルから値が正しく読み込まれることをテストする。
     """
     # このテストでは、実際のファイルは読み込まれず、mock_config_fileが使われる
-    assert not nn_script.PERFORM_TRAINING
-    assert nn_script.mat_name == 'TestMat'
-    assert nn_script.target_freq == 60
-    assert nn_script.HIDDEN_LAYERS == [128, 64]
-    assert nn_script.activation_func_str == 'Tanh'
-    assert nn_script.LEARNING_RATE == 0.01
-    assert nn_script.EPOCHS == 50
-    assert nn_script.LossFunc == 'RMSE'
-    assert np.isclose(nn_script.Bmtrain_min, 0.2)
-    assert np.isclose(nn_script.Bmreg_max, 1.6)
+    assert not nn_module.PERFORM_TRAINING
+    assert nn_module.mat_name == 'TestMat'
+    assert nn_module.target_freq == 60
+    assert nn_module.HIDDEN_LAYERS == [128, 64]
+    assert nn_module.activation_func_str == 'Tanh'
+    assert nn_module.LEARNING_RATE == 0.01
+    assert nn_module.EPOCHS == 50
+    assert nn_module.LossFunc == 'RMSE'
+    assert np.isclose(nn_module.Bmtrain_min, 0.2)
+    assert np.isclose(nn_module.Bmreg_max, 1.6)
