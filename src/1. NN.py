@@ -32,17 +32,17 @@ PERFORM_TRAINING = True
 mat_name = "50A470"
 target_freq = 20
 # --- NN Architecture ---
-HIDDEN_LAYERS = [128, 256, 512, 256, 128]
+HIDDEN_LAYERS = [128, 128]
 ACTIVATION_FUNC = nn.ReLU()
 # --- Training Parameters ---
 LEARNING_RATE = 0.0002
-EPOCHS = 10000
+EPOCHS = 1000
 BATCH_SIZE = 32
 GRAD_CLIP = 1.0
 
 LossFunc = 'MSE' #RMSE or MSE
 # --- 学習データの振幅設定 ---
-Bmtrain_min = 0.05
+Bmtrain_min = 0.1
 Bmtrain_max = 1.8
 train_step = 0.1
 train_amp = list(np.round(np.arange(Bmtrain_min, Bmtrain_max + 1e-8, train_step), 1))
@@ -54,19 +54,28 @@ step = 0.05
 # ==============================================================================
 # パス設定 & 関数定義
 # ==============================================================================
-base_dir = os.path.dirname(__file__)
+try:
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    base_dir = os.path.dirname(script_dir)
+except NameError:
+    # 対話型環境などで__file__が定義されていない場合のフォールバック
+    script_dir = os.getcwd()
+    base_dir = os.path.dirname(script_dir)
+
 akima_excel_path = os.path.join(
     base_dir,
-    "2.Normal Magnetization Curve Extraction Folder", "2.Akima spline interpolation",
+    "2.Normal Magnetization Curve Extraction Folder", "assets", "2.Akima spline interpolation",
     f"Bm-Hb Curve_akima_{mat_name}_50hz.xlsx"
 )
-input_base = os.path.join(base_dir, "1.Training Data Folder", "6.Downsampling")
-output_base = os.path.join(base_dir, "3.Answer", "regression_results_NN")
-model_dir = os.path.join(base_dir, "3.Answer", "models_NN")
-truth_data_base = os.path.join(base_dir, "1.Training Data Folder", "7.reference data")
+input_base = os.path.join(base_dir, "1.Training Data Folder", "assets", "6.Downsampling")
+output_base = os.path.join(base_dir, "3.Answer", "NN_regression_results")
+model_dir = os.path.join(base_dir, "3.Answer", "NN_models")
+truth_data_base = os.path.join(base_dir, "1.Training Data Folder", "assets", "7.reference data")
+
 plot_output_dir = os.path.join(output_base, mat_name, str(target_freq), "plots")
 os.makedirs(model_dir, exist_ok=True)
 os.makedirs(plot_output_dir, exist_ok=True)
+
 model_info_path = os.path.join(model_dir, f"model_info_{mat_name}_{target_freq}hz.xlsx")
 model_weights_path = os.path.join(model_dir, f"model_weights_{mat_name}_{target_freq}hz.pth")
 scaler_X_path = os.path.join(model_dir, f"scaler_X_{mat_name}_{target_freq}hz.pkl")
