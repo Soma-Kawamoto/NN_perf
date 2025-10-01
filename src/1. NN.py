@@ -137,8 +137,7 @@ def create_info_df(amp_value=None):
         ],
         "値": [
             datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            mat_name, target_freq, str(HIDDEN_LAYERS), activation_func_str,
-            str(HIDDEN_LAYERS), str(ACTIVATION_FUNC), LEARNING_RATE, EPOCHS, BATCH_SIZE, GRAD_CLIP, LossFunc,
+            mat_name, target_freq, str(HIDDEN_LAYERS), activation_func_str, LEARNING_RATE, EPOCHS, BATCH_SIZE, GRAD_CLIP, LossFunc,
             str(train_amp), os.path.basename(akima_excel_path)
         ]
     }
