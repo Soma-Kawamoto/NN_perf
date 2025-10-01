@@ -19,37 +19,50 @@ from openpyxl.chart.shapes import GraphicalProperties
 from openpyxl.drawing.line import LineProperties
 import japanize_matplotlib
 from datetime import datetime
+import configparser
 
 plt.rcParams["font.family"] = "Times New Roman"
 plt.rcParams["font.size"] = 20
 
 # ==============================================================================
-# ユーザー設定箇所
+# --- 設定ファイルの読み込み ---
 # ==============================================================================
-# --- 1. 動作モード設定 ---
-PERFORM_TRAINING = True
-# --- 2. モデルと学習データ、最適化の設定 ---
-mat_name = "50A470"
-target_freq = 20
-# --- NN Architecture ---
-HIDDEN_LAYERS = [2048]
-ACTIVATION_FUNC = nn.ReLU()
-# --- Training Parameters ---
-LEARNING_RATE = 0.0002
-EPOCHS = 1000
-BATCH_SIZE = 32
-GRAD_CLIP = 1.0
+try:
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+except NameError:
+    script_dir = os.getcwd()
 
-LossFunc = 'MSE' #RMSE or MSE
-# --- 学習データの振幅設定 ---
-Bmtrain_min = 0.1
-Bmtrain_max = 1.8
-train_step = 0.1
+config_path = os.path.join(script_dir, "..", "config", "1. NN.ini")
+config = configparser.ConfigParser()
+config.read(config_path, encoding='utf-8')
+
+# [settings]
+PERFORM_TRAINING = config.getboolean('settings', 'PERFORM_TRAINING')
+mat_name = config.get('settings', 'mat_name')
+target_freq = config.getint('settings', 'target_freq')
+
+# [architecture]
+hidden_layers_str = config.get('architecture', 'HIDDEN_LAYERS')
+HIDDEN_LAYERS = [int(x.strip()) for x in hidden_layers_str.split(',') if x.strip()]
+activation_func_str = config.get('architecture', 'ACTIVATION_FUNC')
+
+# [training]
+LEARNING_RATE = config.getfloat('training', 'LEARNING_RATE')
+EPOCHS = config.getint('training', 'EPOCHS')
+BATCH_SIZE = config.getint('training', 'BATCH_SIZE')
+GRAD_CLIP = config.getfloat('training', 'GRAD_CLIP')
+LossFunc = config.get('training', 'LOSS_FUNC')
+
+# [data]
+Bmtrain_min = config.getfloat('data', 'Bmtrain_min')
+Bmtrain_max = config.getfloat('data', 'Bmtrain_max')
+train_step = config.getfloat('data', 'train_step')
 train_amp = list(np.round(np.arange(Bmtrain_min, Bmtrain_max + 1e-8, train_step), 1))
-# --- 3. 回帰（予測）対象の設定 ---
-Bmreg_min = 0.05
-Bmreg_max = 1.8
-step = 0.05
+
+# [regression]
+Bmreg_min = config.getfloat('regression', 'Bmreg_min')
+Bmreg_max = config.getfloat('regression', 'Bmreg_max')
+step = config.getfloat('regression', 'step')
 
 # ==============================================================================
 # パス設定 & 関数定義
@@ -90,6 +103,17 @@ class RMSELoss(nn.Module):
     def forward(self, yhat, y):
         return torch.sqrt(self.mse(yhat, y) + self.eps)
 
+def get_activation_function(name):
+    """設定ファイル内の文字列から活性化関数オブジェクトを取得する"""
+    if name.lower() == 'relu':
+        return nn.ReLU()
+    elif name.lower() == 'tanh':
+        return nn.Tanh()
+    elif name.lower() == 'sigmoid':
+        return nn.Sigmoid()
+    else:
+        raise ValueError(f"未対応の活性化関数です: {name}")
+
 class FullyConnectedNN(nn.Module):
     def __init__(self, input_size, output_size, hidden_layers, activation_func=nn.ReLU()):
         super(FullyConnectedNN, self).__init__()
@@ -113,7 +137,7 @@ def create_info_df(amp_value=None):
         ],
         "値": [
             datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            mat_name, target_freq,
+            mat_name, target_freq, str(HIDDEN_LAYERS), activation_func_str,
             str(HIDDEN_LAYERS), str(ACTIVATION_FUNC), LEARNING_RATE, EPOCHS, BATCH_SIZE, GRAD_CLIP, LossFunc,
             str(train_amp), os.path.basename(akima_excel_path)
         ]
@@ -254,6 +278,7 @@ plt.show()
 
 # --- NNモデル構築と学習 ---
 print("\n全結合型ニューラルネットワークモデルを構築しています...")
+ACTIVATION_FUNC = get_activation_function(activation_func_str)
 model = FullyConnectedNN(input_size=2, output_size=1, hidden_layers=HIDDEN_LAYERS, activation_func=ACTIVATION_FUNC)
 scaler_X, scaler_Y = StandardScaler(), StandardScaler()
 should_load_model = not PERFORM_TRAINING
@@ -265,6 +290,7 @@ if should_load_model:
         if (str(saved_settings.get('材料名')) == str(mat_name) and
             int(saved_settings.get('対象周波数 (Hz)')) == int(target_freq) and
             str(saved_settings.get('NN隠れ層')) == str(HIDDEN_LAYERS) and
+            str(saved_settings.get('NN活性化関数')) == str(activation_func_str) and
             float(saved_settings.get('NN学習率')) == float(LEARNING_RATE) and
             int(saved_settings.get('NNエポック数')) == int(EPOCHS) and
             int(saved_settings.get('NNバッチサイズ')) == int(BATCH_SIZE) and
