@@ -18,6 +18,7 @@ from openpyxl.chart import ScatterChart, Reference, Series
 from openpyxl.chart.shapes import GraphicalProperties
 from openpyxl.drawing.line import LineProperties
 import japanize_matplotlib
+from openpyxl.drawing.image import Image as OpenpyxlImage
 from datetime import datetime
 import configparser
 
@@ -189,12 +190,14 @@ except Exception as e:
 
 print("\nNNモデルの学習データを読み込んでいます...")
 X_list, Y_list = [], []
+data_points_per_amp = {}
 X_list.append([0.0, 0.0]); Y_list.append([0.0])
 for amp in train_amp:
     path = os.path.join(input_base, mat_name, str(target_freq), f"Bm{amp:.1f}hys_{target_freq}hz_reduct.xlsx")
     print(f"  - Reading Hysteresis Data: {path}")
     if not os.path.exists(path):
         print("    -> 🔴 ファイルが見つかりません。スキップします。")
+        data_points_per_amp[amp] = 0
         continue
     df = pd.read_excel(path, engine='openpyxl')
     B, H = df['B'].values, df['H'].values
@@ -274,6 +277,25 @@ plt.savefig(plot_save_path)
 print(f"✅ 学習データのプロットをファイルに保存しました: {plot_save_path}")
 print("▶️ 学習データのプロットを表示します。このウィンドウを閉じると、モデルの学習が始まります...")
 plt.show()
+
+# --- 学習データ点数プロット ---
+print("\n学習データ点数をプロットしています...")
+data_points_plot_path = os.path.join(plot_output_dir, "training_data_points_vs_amp.png")
+if data_points_per_amp:
+    amps = list(data_points_per_amp.keys())
+    points = list(data_points_per_amp.values())
+
+    plt.figure(figsize=(10, 6))
+    plt.bar(amps, points, width=train_step*0.8, align='center', color='mediumseagreen', edgecolor='black')
+    plt.title(f'学習データ点数 vs 磁束密度振幅 - {mat_name} {target_freq}Hz')
+    plt.xlabel('磁束密度振幅 Bm [T]')
+    plt.ylabel('学習データ点数')
+    plt.xticks(amps, rotation=45)
+    plt.grid(True, axis='y', linestyle='--', alpha=0.7)
+    plt.tight_layout()
+    plt.savefig(data_points_plot_path)
+    print(f"✅ 学習データ点数のプロットをファイルに保存しました: {data_points_plot_path}")
+    plt.show()
 
 # --- NNモデル構築と学習 ---
 print("\n全結合型ニューラルネットワークモデルを構築しています...")
@@ -418,6 +440,11 @@ if rmse_results:
         with pd.ExcelWriter(rmse_out_path, engine='openpyxl') as writer:
             info_df = create_info_df()
             info_df.to_excel(writer, sheet_name='Info', index=False)
+            # 学習データ点数のプロット画像をInfoシートに貼り付け
+            if os.path.exists(data_points_plot_path):
+                img = OpenpyxlImage(data_points_plot_path)
+                writer.sheets['Info'].add_image(img, 'E1')
+
             df_rmse.to_excel(writer, sheet_name='RMSE_Summary', index=False)
             for item in comparison_sheets_data:
                 amp, df_data = item['amp'], item['df']
