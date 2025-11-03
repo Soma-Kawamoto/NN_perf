@@ -268,7 +268,7 @@ for amp in train_amp:
 plt.scatter(0, 0, s=80, c='black', marker='o', zorder=6, label='Origin Point')
 plt.scatter(Hb_vals, Bm_vals, s=80, c='red', marker='o', edgecolors='none', zorder=5, label='Akima Points (Used)')
 plt.scatter(-Hb_vals, -Bm_vals, s=80, c='red', marker='o', edgecolors='none', zorder=5)
-plt.title(f'学習データ点の分布 - {mat_name} {target_freq}Hz (NN)')
+# plt.title(f'学習データ点の分布 - {mat_name} {target_freq}Hz (NN)')
 plt.xlabel('H [A/m]'); plt.ylabel('B [T]')
 plt.grid(True, linestyle='--', alpha=0.6)
 plt.tight_layout()
@@ -331,7 +331,7 @@ if not settings_match:
     X_train_tensor = torch.FloatTensor(X_train_scaled)
     Y_train_tensor = torch.FloatTensor(Y_train_scaled)
     train_dataset = TensorDataset(X_train_tensor, Y_train_tensor)
-    train_loader = DataLoader(dataset=train_dataset, batch_size=BATCH_SIZE, shuffle=True)
+    train_loader = DataLoader(dataset=train_dataset, batch_size=BATCH_SIZE, shuffle=True)  # シャッフル=Trueとしている！したがって、バッチは適当に選ばれる
     if LossFunc == 'RMSE':
         criterion = RMSELoss()
     elif LossFunc == 'MSE':
