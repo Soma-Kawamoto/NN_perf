@@ -89,6 +89,7 @@ venv.bak/
 # ==============================================================================
 # 各環境で異なる設定ファイルをGitの追跡対象から除外します。
 /2.Normal Magnetization Curve Extraction Folder/config/
+/1.Training Data Folder/config/
 
 /3.Answer/
 /4.Answer (Bayesian_optimization)/
