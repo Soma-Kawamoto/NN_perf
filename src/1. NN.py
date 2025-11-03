@@ -9,7 +9,7 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import torch
-import torch.nn as nn
+import torch.nn as nn # type: ignore
 import torch.optim as optim
 from torch.utils.data import TensorDataset, DataLoader
 from sklearn.preprocessing import StandardScaler
@@ -21,6 +21,8 @@ import japanize_matplotlib
 from openpyxl.drawing.image import Image as OpenpyxlImage
 from datetime import datetime
 import configparser
+from sklearn.model_selection import train_test_split
+import optuna
 
 plt.rcParams["font.family"] = "Times New Roman"
 plt.rcParams["font.size"] = 20
@@ -38,21 +40,29 @@ config = configparser.ConfigParser()
 config.read(config_path, encoding='utf-8')
 
 # [settings]
-PERFORM_TRAINING = config.getboolean('settings', 'PERFORM_TRAINING')
+PERFORM_TRAINING = config.getboolean('settings', 'PERFORM_TRAINING', fallback=True)
 mat_name = config.get('settings', 'mat_name')
 target_freq = config.getint('settings', 'target_freq')
+PERFORM_OPTUNA = config.getboolean('settings', 'PERFORM_OPTUNA', fallback=False)
+N_TRIALS = config.getint('settings', 'N_TRIALS', fallback=50)
 
 # [architecture]
 hidden_layers_str = config.get('architecture', 'HIDDEN_LAYERS')
 HIDDEN_LAYERS = [int(x.strip()) for x in hidden_layers_str.split(',') if x.strip()]
 activation_func_str = config.get('architecture', 'ACTIVATION_FUNC')
 
-# [training]
+# [training] - Optunaを使用しない場合のデフォルト値
 LEARNING_RATE = config.getfloat('training', 'LEARNING_RATE')
 EPOCHS = config.getint('training', 'EPOCHS')
 BATCH_SIZE = config.getint('training', 'BATCH_SIZE')
 GRAD_CLIP = config.getfloat('training', 'GRAD_CLIP')
 LossFunc = config.get('training', 'LOSS_FUNC')
+
+# [optuna_search_space] - Optunaの探索範囲
+# fallback値を追加して、セクションが存在しなくてもエラーにならないようにする
+lr_min = config.getfloat('optuna_search_space', 'lr_min', fallback=1e-5)
+lr_max = config.getfloat('optuna_search_space', 'lr_max', fallback=1e-2)
+LR_RANGE = [lr_min, lr_max]
 
 # [data]
 Bmtrain_min = config.getfloat('data', 'Bmtrain_min')
@@ -171,7 +181,7 @@ def add_comparison_chart_to_sheet(ws, df_len):
     ws.add_chart(chart, "F2")
 
 # ==============================================================================
-# プログラム本体
+# --- データ読み込みと前処理 ---
 # ==============================================================================
 
 # --- データ読み込み ---
@@ -298,10 +308,10 @@ if data_points_per_amp:
     plt.show()
 
 # --- NNモデル構築と学習 ---
-print("\n全結合型ニューラルネットワークモデルを構築しています...")
-ACTIVATION_FUNC = get_activation_function(activation_func_str)
-model = FullyConnectedNN(input_size=2, output_size=1, hidden_layers=HIDDEN_LAYERS, activation_func=ACTIVATION_FUNC)
-scaler_X, scaler_Y = StandardScaler(), StandardScaler()
+scaler_X = StandardScaler()
+scaler_Y = StandardScaler()
+X_train_scaled = scaler_X.fit_transform(X_train)
+Y_train_scaled = scaler_Y.fit_transform(Y_train)
 should_load_model = not PERFORM_TRAINING
 settings_match = False
 if should_load_model:
@@ -321,22 +331,100 @@ if should_load_model:
             settings_match = True
     except Exception:
         settings_match = False
-if not settings_match:
-    if should_load_model:
-        print("\n⚠️ 警告: 保存済みのモデルと設定が異なるか、ファイルが存在しません。")
-        print("   安全のため、モデルの再学習を強制的に実行します。")
+
+# ==============================================================================
+# --- Optunaによるハイパーパラメータ最適化 ---
+# ==============================================================================
+def objective(trial):
+    """Optunaの目的関数"""
+    # --- 1. ハイパーパラメータの提案 ---
+    lr = trial.suggest_float("lr", LR_RANGE[0], LR_RANGE[1], log=True)
+    n_layers = trial.suggest_int("n_layers", 1, 4)
+    hidden_layers = [trial.suggest_int(f"n_units_l{i}", 32, 256) for i in range(n_layers)]
+    activation_str = trial.suggest_categorical("activation", ["relu", "tanh"])
+    batch_size = trial.suggest_categorical("batch_size", [32, 64, 128, 256])
+    
+    # --- 2. モデルの構築 ---
+    activation_func = get_activation_function(activation_str)
+    model = FullyConnectedNN(input_size=2, output_size=1, hidden_layers=hidden_layers, activation_func=activation_func)
+    optimizer = optim.Adam(model.parameters(), lr=lr)
+    criterion = RMSELoss() if LossFunc == 'RMSE' else nn.MSELoss()
+
+    # --- 3. 学習データと検証データの分割 ---
+    X_t, X_v, Y_t, Y_v = train_test_split(X_train_scaled, Y_train_scaled, test_size=0.2, random_state=42)
+    X_train_tensor = torch.FloatTensor(X_t)
+    Y_train_tensor = torch.FloatTensor(Y_t)
+    X_val_tensor = torch.FloatTensor(X_v)
+    Y_val_tensor = torch.FloatTensor(Y_v)
+    
+    train_dataset = TensorDataset(X_train_tensor, Y_train_tensor)
+    train_loader = DataLoader(dataset=train_dataset, batch_size=batch_size, shuffle=True)
+
+    # --- 4. モデルの学習 ---
+    for epoch in range(EPOCHS):
+        model.train()
+        for inputs, targets in train_loader:
+            optimizer.zero_grad()
+            outputs = model(inputs)
+            loss = criterion(outputs, targets)
+            if torch.isnan(loss): return float('inf') # 損失がnanになったら、その試行は失敗
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=GRAD_CLIP)
+            optimizer.step()
+
+    # --- 5. 検証と評価指標の返却 ---
+    model.eval()
+    with torch.no_grad():
+        val_outputs = model(X_val_tensor)
+        val_loss = criterion(val_outputs, Y_val_tensor)
+
+    return val_loss.item()
+
+if PERFORM_OPTUNA:
+    print("\n" + "="*70)
+    print("Optunaによるハイパーパラメータ探索を開始します...")
+    print(f"試行回数: {N_TRIALS}")
+    print("="*70)
+    
+    study = optuna.create_study(direction="minimize")
+    study.optimize(objective, n_trials=N_TRIALS)
+
+    print("\n" + "="*70)
+    print("Optunaによる探索が完了しました。")
+    print(f"最良スコア (検証RMSE): {study.best_value}")
+    print("最適なハイパーパラメータ:")
+    print(study.best_params)
+    print("="*70)
+
+    # 最適化されたパラメータをグローバル変数に設定して、最終的な学習に使用
+    best_params = study.best_params
+    LEARNING_RATE = best_params['lr']
+    HIDDEN_LAYERS = [best_params[f'n_units_l{i}'] for i in range(best_params['n_layers'])]
+    activation_func_str = best_params['activation']
+    BATCH_SIZE = best_params['batch_size']
+    PERFORM_TRAINING = True # 最適化後は必ず学習を実行
+    settings_match = False # 保存済みモデルは使わない
+
+# ==============================================================================
+# --- モデル学習と結果出力 ---
+# ==============================================================================
+
+if not settings_match and PERFORM_TRAINING:
     print("\nモデルの学習を開始します...")
-    X_train_scaled = scaler_X.fit_transform(X_train)
-    Y_train_scaled = scaler_Y.fit_transform(Y_train)
+    # --- モデル構築 ---
+    ACTIVATION_FUNC = get_activation_function(activation_func_str)
+    model = FullyConnectedNN(input_size=2, output_size=1, hidden_layers=HIDDEN_LAYERS, activation_func=ACTIVATION_FUNC)
+    
+    # --- データローダー準備 ---
     X_train_tensor = torch.FloatTensor(X_train_scaled)
     Y_train_tensor = torch.FloatTensor(Y_train_scaled)
     train_dataset = TensorDataset(X_train_tensor, Y_train_tensor)
-    train_loader = DataLoader(dataset=train_dataset, batch_size=BATCH_SIZE, shuffle=True)  # シャッフル=Trueとしている！したがって、バッチは適当に選ばれる
-    if LossFunc == 'RMSE':
-        criterion = RMSELoss()
-    elif LossFunc == 'MSE':
-        criterion = nn.MSELoss()
+    train_loader = DataLoader(dataset=train_dataset, batch_size=BATCH_SIZE, shuffle=True)
+    
+    # --- 学習実行 ---
+    criterion = RMSELoss() if LossFunc == 'RMSE' else nn.MSELoss()
     optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE)
+    
     for epoch in range(EPOCHS):
         model.train()
         for inputs, targets in train_loader:
@@ -344,28 +432,30 @@ if not settings_match:
             outputs = model(inputs)
             loss = criterion(outputs, targets)
             if torch.isnan(loss):
-                print(f"🔴 エラー: Epoch {epoch+1}で損失がnanになりました。学習を停止します。")
-                print("   学習率をさらに下げるか、モデルの構造やデータを見直してください。")
-                exit()
+                print(f"🔴 エラー: Epoch {epoch+1}で損失がnanになりました。学習を停止します。"); exit()
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=GRAD_CLIP)
             optimizer.step()
         if (epoch + 1) % 10 == 0 or epoch == 0:
             print(f'Epoch [{epoch+1}/{EPOCHS}], Loss: {loss.item():.6f}')
-    print("学習が完了しました。")
+            
+    print("✅ 学習が完了しました。")
     torch.save(model.state_dict(), model_weights_path)
     with open(scaler_X_path, 'wb') as f: pickle.dump(scaler_X, f)
     with open(scaler_Y_path, 'wb') as f: pickle.dump(scaler_Y, f)
     info_df = create_info_df()
     with pd.ExcelWriter(model_info_path, engine='openpyxl') as writer:
         info_df.to_excel(writer, sheet_name='Info', index=False)
-    print(f"学習済みモデルと設定情報を保存しました:\n {model_dir}")
+    print(f"✅ 学習済みモデルと設定情報を保存しました:\n {model_dir}")
 else:
     print(f"\n✅ 設定が一致したため、保存済みのモデルを読み込みます:\n {model_dir}")
+    ACTIVATION_FUNC = get_activation_function(activation_func_str)
+    model = FullyConnectedNN(input_size=2, output_size=1, hidden_layers=HIDDEN_LAYERS, activation_func=ACTIVATION_FUNC)
     model.load_state_dict(torch.load(model_weights_path))
     with open(scaler_X_path, 'rb') as f: scaler_X = pickle.load(f)
     with open(scaler_Y_path, 'rb') as f: scaler_Y = pickle.load(f)
-    print("モデルとスケーラーの読み込みが完了しました.")
+    print("✅ モデルとスケーラーの読み込みが完了しました.")
+
 # --- 結果プロット、Excel出力、およびRMSE計算 ---
 print("\n回帰結果を計算し、出力しています...")
 plt.figure(figsize=(10, 8))
