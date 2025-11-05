@@ -457,18 +457,33 @@ else:
     print("✅ モデルとスケーラーの読み込みが完了しました.")
 
 # --- 結果プロット、Excel出力、およびRMSE計算 ---
+# ==============================================================================
+# --- 結果プロット、Excel出力、およびRMSE計算 ---
+# ==============================================================================
 print("\n回帰結果を計算し、出力しています...")
 plt.figure(figsize=(10, 8))
+plt.title(f'NN Regression vs Reference - {mat_name} {target_freq}Hz')
 plt.scatter(Hb_vals, Bm_vals, marker='x', c='k', s=50, zorder=3, label='Akima (Train)')
 plt.scatter(-Hb_vals, -Bm_vals, marker='x', c='k', s=50, zorder=3, label='_nolegend_')
+
 pred_amps = np.round(np.arange(Bmreg_min, Bmreg_max + 1e-8, step), 2)
+# train_ampを丸めてセットに変換（浮動小数点数の比較のため）
+train_amp_set = set(np.round(train_amp, 2)) 
+
+# 凡例用のダミープロット
+plt.plot([], [], color='red', linestyle='-', label='Extrapolation (Not in Train)')
+plt.plot([], [], color='blue', linestyle='-', alpha=0.6, label='Interpolation (In Train)')
+
 rmse_results = []
 comparison_sheets_data = []
 model.eval()
 with torch.no_grad():
     for i, amp in enumerate(pred_amps):
         num_points = int(round(2 * amp / step)) + 1
-        if num_points <= 1: continue # 点が1つ以下の場合はスキップ
+        if num_points <= 1: 
+            print(f"   Bm = {amp:.2f}T, 点数が1以下なのでスキップします。")
+            continue
+        
         Breg = np.linspace(-amp, amp, num_points)
         X_pred = np.array([[amp, b] for b in Breg])
         X_pred_scaled = scaler_X.transform(X_pred)
@@ -477,44 +492,63 @@ with torch.no_grad():
         Hpred_means = scaler_Y.inverse_transform(Hpred_scaled.numpy())
         Hpred = Hpred_means.flatten()
         has_ref_data = False
+        
         if i < len(truth_data_blocks):
             df_truth_loop = truth_data_blocks[i]
-            if 'B' in df_truth_loop.columns and 'H_descending' in df_truth_loop.columns and np.allclose(Breg, df_truth_loop['B'].values):
+            # B軸の点群が一致するか確認
+            if 'B' in df_truth_loop.columns and 'H_descending' in df_truth_loop.columns and np.allclose(Breg, df_truth_loop['B'].values, rtol=1e-5, atol=1e-2):
                 has_ref_data = True
                 h_true_desc = df_truth_loop['H_descending'].values
                 b_true = df_truth_loop['B'].values
                 Hb_pred = Hpred[-1]
                 rmse = np.sqrt(np.mean((h_true_desc - Hpred)**2))
-                relative_rmse = rmse / Hb_pred if Hb_pred != 0 else np.nan
+                relative_rmse = rmse / abs(Hb_pred) if Hb_pred != 0 else np.nan
                 rmse_results.append({'Amplitude (T)': amp, 'RMSE (H_descending)': rmse, 'Hb [A/m]': Hb_pred, 'RMSE/Hb': relative_rmse})
-                print(f"   Bm = {amp:.2f}T, RMSE = {rmse:.4f}, Hb = {Hb_pred:.2f}, RMSE/Hb = {relative_rmse:.4%}")
-                label_ref = f'Ref {amp:.2f}T' if amp in [pred_amps[0], 1.0, pred_amps[-1]] else None
-                plt.plot(h_true_desc, b_true, marker='.', linestyle='none', markersize=5, zorder=1, label=label_ref)
+                print(f"   Bm = {amp:.2f}T, RMSE = {rmse:.4f}, Hb = {Hb_pred:.2f}, RMSE/Hb = {relative_rmse:.4%}")
+                
+                label_ref = f'Ref {amp:.2f}T' if amp in [pred_amps.min(), 1.0, pred_amps.max()] else None
+                plt.plot(h_true_desc, b_true, marker='.', color='gray', linestyle='none', markersize=5, zorder=1, label=label_ref)
+                
                 df_comp = pd.DataFrame({
                     'H_pred [A/m]': Hpred, 'B_reg [T]': Breg,
                     'H_ref [A/m]': h_true_desc, 'B_ref [T]': b_true
                 })
                 comparison_sheets_data.append({'amp': amp, 'df': df_comp})
             else:
-                print(f"   Bm = {amp:.2f}T, 警告: 正解データとB軸の点が一致しないためRMSE計算と参照プロットをスキップします.")
-        plt.plot(Hpred, Breg, color='red', linestyle='-', zorder=2)
+                print(f"   Bm = {amp:.2f}T, 警告: 正解データとB軸の点が一致しないためRMSE計算と参照プロットをスキップします。")
+        else:
+             print(f"   Bm = {amp:.2f}T, 警告: 対応する正解データブロックが見つかりません。")
+
+        # ★★★ 回帰結果のプロット色分け ★★★
+        if amp in train_amp_set:
+            plt.plot(Hpred, Breg, color='blue', linestyle='-', zorder=2, alpha=0.6) # 学習データに含まれる振幅
+        else:
+            plt.plot(Hpred, Breg, color='red', linestyle='-', zorder=2) # 学習データに含まれない振幅（外挿）
+
 plt.xlabel(r'$\it{H}$ [A/m]'); plt.ylabel(r'$\it{B}$ [T]'); 
 plt.grid(True)
+plt.legend()
 plot_save_path_results = os.path.join(plot_output_dir, f"regression_results.png")
 plt.savefig(plot_save_path_results)
 print(f"✅ 回帰結果のプロットをファイルに保存しました: {plot_save_path_results}")
 plt.show()
+
+# --- Excelへの書き込み ---
 if rmse_results:
     print("\n" + "="*70)
     print("RMSE 計算結果サマリー")
     print("="*70)
     df_rmse = pd.DataFrame(rmse_results)
     print(df_rmse.to_string(index=False))
-    final_output_dir = os.path.join(output_base, mat_name, str(target_freq))
+    
+    # ★★★ 修正箇所: 出力パスをご指定の絶対パスに変更 ★★★
+    final_output_dir = r"C:\Users\RM-2503-1\Desktop\M1\3_研究\NN_perf\3.Answer\NN_regression_results\50A470\20"
+    
     os.makedirs(final_output_dir, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     filename = f"{timestamp}_RMSE_summary_{mat_name}_{target_freq}hz_NN.xlsx"
     rmse_out_path = os.path.join(final_output_dir, filename)
+    
     if not PERFORM_TRAINING and settings_match:
         try:
             pattern = f"_RMSE_summary_{mat_name}_{target_freq}hz_NN.xlsx"
@@ -525,26 +559,32 @@ if rmse_results:
                     break
         except Exception as e:
             print(f"\n⚠️ 既存ファイルの削除に失敗しました: {e}.")
-    print(f"\n結果をファイルに保存します:\n {rmse_out_path}")
+            
+    print(f"\n結果をExcelファイルに保存します:\n {rmse_out_path}")
     try:
         with pd.ExcelWriter(rmse_out_path, engine='openpyxl') as writer:
+            # Infoシートの作成
             info_df = create_info_df()
             info_df.to_excel(writer, sheet_name='Info', index=False)
-            # 学習データ点数のプロット画像をInfoシートに貼り付け
-            if os.path.exists(data_points_plot_path):
-                img = OpenpyxlImage(data_points_plot_path)
-                writer.sheets['Info'].add_image(img, 'E1')
-
+            
+            # RMSE Summaryシートの作成
             df_rmse.to_excel(writer, sheet_name='RMSE_Summary', index=False)
+            
+            # 各振幅の比較シートの作成
             for item in comparison_sheets_data:
                 amp, df_data = item['amp'], item['df']
                 sheet_name = f"{amp:.2f}T"
                 df_data.to_excel(writer, sheet_name=sheet_name, index=False)
                 ws = writer.sheets[sheet_name]
+                # グラフをシートに追加
                 add_comparison_chart_to_sheet(ws, len(df_data))
+                
         print(f"\n✅ 結果を保存しました.")
     except PermissionError:
-        print(f"\n🔴 保存エラー: ファイルへのアクセスが拒否されました。'{os.path.basename(rmse_out_path)}'が開かれていないか確認してください.")
+        print(f"\n🔴 保存エラー: ファイルへのアクセスが拒否されました。'{os.path.basename(rmse_out_path)}'が開かれていないか確認してください。")
     except Exception as e:
         print(f"🔴 Excelファイルへの書き込み中に予期せぬエラーが発生しました: {e.__class__.__name__}: {e}")
+else:
+    print("\n⚠️ RMSE結果が計算されませんでした。Excelへの出力をスキップします。")
+
 print("\n全ての処理が完了しました.")
