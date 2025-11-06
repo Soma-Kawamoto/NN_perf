@@ -96,6 +96,4 @@ venv.bak/
 /3.Answer/hyperparameters/
 
 # configフォルダ内の特定の.iniファイルを無視
-config/1. NN.ini
-# 設定ファイルを無視する
 config/*.ini
