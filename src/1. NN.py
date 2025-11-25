@@ -385,8 +385,19 @@ if PERFORM_OPTUNA:
     print("Optunaによるハイパーパラメータ探索を開始します...")
     print(f"試行回数: {N_TRIALS}")
     print("="*70)
-    
-    study = optuna.create_study(direction="minimize")
+
+    # --- 変更後 ---
+    # データベースのファイル名を指定（拡張子は .db）
+    db_url = "sqlite:///search_result.db"
+    study_name = "nn_hysteresis_study"  # 実験の名前
+
+    # storage引数を追加して、ファイルに保存させる
+    study = optuna.create_study(
+        direction="minimize", 
+        storage=db_url,           # ★ここが重要
+        study_name=study_name,    # ★実験名
+        load_if_exists=True       # 既に同じ名前の実験があれば続きからやる
+    )
     study.optimize(objective, n_trials=N_TRIALS)
 
     print("\n" + "="*70)
