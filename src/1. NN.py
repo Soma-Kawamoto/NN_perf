@@ -59,6 +59,14 @@ GRAD_CLIP = config.getfloat('training', 'GRAD_CLIP')
 LossFunc = config.get('training', 'LOSS_FUNC')
 
 # [optuna_search_space] - Optunaの探索範囲
+# ...（既存の設定）
+# [optuna_search_space] ...
+
+# ★★★ 追加設定: 過去の結果Excelからハイパーパラメータをロードする場合 ★★★
+LOAD_PARAMS_FROM_EXCEL = False  # Trueにすると、下のパスのExcelからパラメータを読み込みます
+PARAMS_EXCEL_PATH = r"C:\Users\RM-2503-1\Desktop\M1\3_研究\NN_perf\3.Answer\NN_regression_results\50A470\20\20251103_142945_RMSE_summary_50A470_20hz_NN.xlsx"
+
+# ...（既存の設定）
 # fallback値を追加して、セクションが存在しなくてもエラーにならないようにする
 lr_min = config.getfloat('optuna_search_space', 'lr_min', fallback=1e-5)
 lr_max = config.getfloat('optuna_search_space', 'lr_max', fallback=1e-2)
@@ -156,6 +164,37 @@ def create_info_df(amp_value=None):
         info_data["項目"].append("回帰対象振幅 (T)")
         info_data["値"].append(f"{amp_value:.2f}")
     return pd.DataFrame(info_data)
+
+def load_hyperparams_from_excel(excel_path):
+    """ExcelのInfoシートからハイパーパラメータを読み込む"""
+    print(f"\n📂 Excelファイルからハイパーパラメータを読み込んでいます: {excel_path}")
+    try:
+        df_info = pd.read_excel(excel_path, sheet_name='Info', engine='openpyxl')
+        # '項目'をキー、'値'をバリューとする辞書を作成
+        params_dict = pd.Series(df_info.値.values, index=df_info.項目).to_dict()
+        
+        # 必要なパラメータを抽出して変換
+        # 注意: 文字列として保存されているリストなどはeval()等で変換が必要
+        hidden_layers_str = str(params_dict.get('NN隠れ層'))
+        hidden_layers = eval(hidden_layers_str) # 文字列 "[128, 64]" をリスト [128, 64] に変換
+        
+        activation = str(params_dict.get('NN活性化関数'))
+        lr = float(params_dict.get('NN学習率'))
+        epochs = int(params_dict.get('NNエポック数'))
+        batch_size = int(params_dict.get('NNバッチサイズ'))
+        grad_clip = float(params_dict.get('NN勾配クリップ値', 1.0)) # ない場合はデフォルト1.0
+        
+        print("✅ 読み込み成功:")
+        print(f"  - Hidden Layers: {hidden_layers}")
+        print(f"  - Activation: {activation}")
+        print(f"  - LR: {lr}")
+        print(f"  - Batch Size: {batch_size}")
+        
+        return hidden_layers, activation, lr, epochs, batch_size, grad_clip
+        
+    except Exception as e:
+        print(f"🔴 エラー: パラメータの読み込みに失敗しました: {e}")
+        exit()
 
 def add_comparison_chart_to_sheet(ws, df_len):
     chart = ScatterChart()
@@ -415,6 +454,37 @@ if PERFORM_OPTUNA:
     BATCH_SIZE = best_params['batch_size']
     PERFORM_TRAINING = True # 最適化後は必ず学習を実行
     settings_match = False # 保存済みモデルは使わない
+
+# ... (Optunaの処理終わり)
+
+# ==============================================================================
+# --- (追加) Excelからのパラメータ読み込みと適用 ---
+# ==============================================================================
+if not PERFORM_OPTUNA and LOAD_PARAMS_FROM_EXCEL and os.path.exists(PARAMS_EXCEL_PATH):
+    # 関数を呼び出してパラメータを取得
+    loaded_hidden, loaded_act, loaded_lr, loaded_epochs, loaded_batch, loaded_clip = load_hyperparams_from_excel(PARAMS_EXCEL_PATH)
+    
+    # グローバル変数を上書き
+    HIDDEN_LAYERS = loaded_hidden
+    activation_func_str = loaded_act # "ReLU()" のような文字列のまま渡すか、"relu"などの名前に変換が必要な場合は調整
+    # Excelに "ReLU()" と保存されている場合、get_activation_function はエラーになる可能性があるため
+    # 以下のような簡易的な変換を入れると安全です
+    if "ReLU" in activation_func_str: activation_func_str = "relu"
+    elif "Tanh" in activation_func_str: activation_func_str = "tanh"
+    elif "Sigmoid" in activation_func_str: activation_func_str = "sigmoid"
+    
+    LEARNING_RATE = loaded_lr
+    EPOCHS = loaded_epochs
+    BATCH_SIZE = loaded_batch
+    GRAD_CLIP = loaded_clip
+    
+    print("🔄 ハイパーパラメータをExcelの値で上書きしました。これを使って学習を行います。")
+    PERFORM_TRAINING = True # 再学習を強制
+    settings_match = False  # 保存済みモデルの使用をキャンセル
+
+# ==============================================================================
+# --- モデル学習と結果出力 ---
+# ... (以下、元のコード)
 
 # ==============================================================================
 # --- モデル学習と結果出力 ---
