@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 全結合型ニューラルネットワーク (NN) による B-H ヒステリシス回帰スクリプト
-【v6: 入力データ(Akima)の自動クレンジング機能を追加】
+【v8: Akimaデータ使用有無(USE_AKIMA_DATA)の切り替え機能を追加】
 """
 import os
 import numpy as np
@@ -51,32 +51,31 @@ hidden_layers_str = config.get('architecture', 'HIDDEN_LAYERS')
 HIDDEN_LAYERS = [int(x.strip()) for x in hidden_layers_str.split(',') if x.strip()]
 activation_func_str = config.get('architecture', 'ACTIVATION_FUNC')
 
-# [training] - Optunaを使用しない場合のデフォルト値
+# [training]
 LEARNING_RATE = config.getfloat('training', 'LEARNING_RATE')
 EPOCHS = config.getint('training', 'EPOCHS')
 BATCH_SIZE = config.getint('training', 'BATCH_SIZE')
 GRAD_CLIP = config.getfloat('training', 'GRAD_CLIP')
 LossFunc = config.get('training', 'LOSS_FUNC')
 
-# [optuna_search_space] - Optunaの探索範囲
-# ...（既存の設定）
-# [optuna_search_space] ...
+# [optuna_search_space]
+lr_min = config.getfloat('optuna_search_space', 'lr_min', fallback=1e-5)
+lr_max = config.getfloat('optuna_search_space', 'lr_max', fallback=1e-2)
+LR_RANGE = [lr_min, lr_max]
 
 # ★★★ 追加設定: 過去の結果Excelからハイパーパラメータをロードする場合 ★★★
 LOAD_PARAMS_FROM_EXCEL = False  # Trueにすると、下のパスのExcelからパラメータを読み込みます
 PARAMS_EXCEL_PATH = r"C:\Users\RM-2503-1\Desktop\M1\3_研究\NN_perf\3.Answer\NN_regression_results\50A470\20\20251103_142945_RMSE_summary_50A470_20hz_NN.xlsx"
-
-# ...（既存の設定）
-# fallback値を追加して、セクションが存在しなくてもエラーにならないようにする
-lr_min = config.getfloat('optuna_search_space', 'lr_min', fallback=1e-5)
-lr_max = config.getfloat('optuna_search_space', 'lr_max', fallback=1e-2)
-LR_RANGE = [lr_min, lr_max]
 
 # [data]
 Bmtrain_min = config.getfloat('data', 'Bmtrain_min')
 Bmtrain_max = config.getfloat('data', 'Bmtrain_max')
 train_step = config.getfloat('data', 'train_step')
 train_amp = list(np.round(np.arange(Bmtrain_min, Bmtrain_max + 1e-8, train_step), 1))
+
+# ★★★ Akimaデータを学習データとして使用するかどうか (True/False) ★★★
+# iniファイルに設定がない場合はデフォルトでTrueとします
+USE_AKIMA_DATA = config.getboolean('data', 'USE_AKIMA_DATA', fallback=True)
 
 # [regression]
 Bmreg_min = config.getfloat('regression', 'Bmreg_min')
@@ -90,7 +89,6 @@ try:
     script_dir = os.path.dirname(os.path.abspath(__file__))
     base_dir = os.path.dirname(script_dir)
 except NameError:
-    # 対話型環境などで__file__が定義されていない場合のフォールバック
     script_dir = os.getcwd()
     base_dir = os.path.dirname(script_dir)
 
@@ -123,15 +121,10 @@ class RMSELoss(nn.Module):
         return torch.sqrt(self.mse(yhat, y) + self.eps)
 
 def get_activation_function(name):
-    """設定ファイル内の文字列から活性化関数オブジェクトを取得する"""
-    if name.lower() == 'relu':
-        return nn.ReLU()
-    elif name.lower() == 'tanh':
-        return nn.Tanh()
-    elif name.lower() == 'sigmoid':
-        return nn.Sigmoid()
-    else:
-        raise ValueError(f"未対応の活性化関数です: {name}")
+    if name.lower() == 'relu': return nn.ReLU()
+    elif name.lower() == 'tanh': return nn.Tanh()
+    elif name.lower() == 'sigmoid': return nn.Sigmoid()
+    else: raise ValueError(f"未対応の活性化関数です: {name}")
 
 class FullyConnectedNN(nn.Module):
     def __init__(self, input_size, output_size, hidden_layers, activation_func=nn.ReLU()):
@@ -152,49 +145,43 @@ def create_info_df(amp_value=None):
         "項目": [
             "実行日時", "材料名", "対象周波数 (Hz)",
             "NN隠れ層", "NN活性化関数", "NN学習率", "NNエポック数", "NNバッチサイズ", "NN勾配クリップ値", "NN損失関数",
-            "学習データ(振幅 T)", "Akima補間データ"
+            "学習データ(振幅 T)", "Akimaデータ使用"
         ],
         "値": [
             datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             mat_name, target_freq, str(HIDDEN_LAYERS), activation_func_str, LEARNING_RATE, EPOCHS, BATCH_SIZE, GRAD_CLIP, LossFunc,
-            str(train_amp), os.path.basename(akima_excel_path)
+            str(train_amp), str(USE_AKIMA_DATA)
         ]
     }
+    if USE_AKIMA_DATA:
+        info_data["項目"].append("Akimaデータファイル")
+        info_data["値"].append(os.path.basename(akima_excel_path))
+        
     if amp_value is not None:
         info_data["項目"].append("回帰対象振幅 (T)")
         info_data["値"].append(f"{amp_value:.2f}")
     return pd.DataFrame(info_data)
 
 def load_hyperparams_from_excel(excel_path):
-    """ExcelのInfoシートからハイパーパラメータを読み込む"""
     print(f"\n📂 Excelファイルからハイパーパラメータを読み込んでいます: {excel_path}")
     try:
         df_info = pd.read_excel(excel_path, sheet_name='Info', engine='openpyxl')
-        # '項目'をキー、'値'をバリューとする辞書を作成
         params_dict = pd.Series(df_info.値.values, index=df_info.項目).to_dict()
-        
-        # 必要なパラメータを抽出して変換
-        # 注意: 文字列として保存されているリストなどはeval()等で変換が必要
         hidden_layers_str = str(params_dict.get('NN隠れ層'))
-        hidden_layers = eval(hidden_layers_str) # 文字列 "[128, 64]" をリスト [128, 64] に変換
-        
+        hidden_layers = eval(hidden_layers_str)
         activation = str(params_dict.get('NN活性化関数'))
         lr = float(params_dict.get('NN学習率'))
         epochs = int(params_dict.get('NNエポック数'))
         batch_size = int(params_dict.get('NNバッチサイズ'))
-        grad_clip = float(params_dict.get('NN勾配クリップ値', 1.0)) # ない場合はデフォルト1.0
-        
+        grad_clip = float(params_dict.get('NN勾配クリップ値', 1.0))
         print("✅ 読み込み成功:")
         print(f"  - Hidden Layers: {hidden_layers}")
         print(f"  - Activation: {activation}")
         print(f"  - LR: {lr}")
         print(f"  - Batch Size: {batch_size}")
-        
         return hidden_layers, activation, lr, epochs, batch_size, grad_clip
-        
     except Exception as e:
-        print(f"🔴 エラー: パラメータの読み込みに失敗しました: {e}")
-        exit()
+        print(f"🔴 エラー: パラメータの読み込みに失敗しました: {e}"); exit()
 
 def add_comparison_chart_to_sheet(ws, df_len):
     chart = ScatterChart()
@@ -215,8 +202,7 @@ def add_comparison_chart_to_sheet(ws, df_len):
     series_ref.graphicalProperties = GraphicalProperties(ln=LineProperties(solidFill="0000FF", w=12700))
     chart.series.append(series_pred)
     chart.series.append(series_ref)
-    if chart.legend:
-      chart.legend.position = 'r'
+    if chart.legend: chart.legend.position = 'r'
     ws.add_chart(chart, "F2")
 
 # ==============================================================================
@@ -225,7 +211,6 @@ def add_comparison_chart_to_sheet(ws, df_len):
 
 # --- データ読み込み ---
 print("RMSE比較のため、正解データを読み込んでいます...")
-print(f"  - 参照パス: {truth_data_path}")
 try:
     df_truth_all = pd.read_excel(truth_data_path, sheet_name=f"{target_freq}Hz", header=1)
     is_nan_row = df_truth_all.isnull().all(axis=1)
@@ -252,56 +237,54 @@ for amp in train_amp:
     B, H = df['B'].values, df['H'].values
     for b_val, h_val in zip(B, H): X_list.append([amp, b_val]); Y_list.append([h_val])
 
-print(f"\nAkima補間データを読み込んでいます...")
-print(f"  - 参照パス: {akima_excel_path}")
-try:
-    df_akima_full = pd.read_excel(akima_excel_path, sheet_name='Interpolated Data', engine='openpyxl')
-    print(f"  - 初期Akimaデータ: {len(df_akima_full)}点")
-    for idx, row in df_akima_full.iterrows():
-        print(f"    - 行 {idx+1}: amp_Bm={row['amp_Bm']:.6f}, amp_Hb={row['amp_Hb']:.6f}")
-    print(f"  - 含まれるBm値: {[round(x, 6) for x in sorted(df_akima_full['amp_Bm'].unique())]}")
-except FileNotFoundError:
-    print(f"🔴 エラー: Akima補間データファイルが見つかりません: {akima_excel_path}"); exit()
+# ★★★ Akimaデータの読み込み処理（USE_AKIMA_DATAフラグで分岐） ★★★
+Hb_vals, Bm_vals = np.array([]), np.array([]) # プロット用に初期化
 
-# ★★★ 修正箇所: AkimaデータをBmregに近い値でフィルタリング ★★★
-initial_rows = len(df_akima_full)
-# 無限大(inf)をNaNに置換
-df_akima_full.replace([np.inf, -np.inf], np.nan, inplace=True)
-# 'amp_Bm'列と'amp_Hb'列にNaNが含まれる行を削除
-df_akima_full.dropna(subset=['amp_Bm', 'amp_Hb'], inplace=True)
-final_rows = len(df_akima_full)
-if initial_rows > final_rows:
-    print(f"  - 警告: Akimaデータから{initial_rows - final_rows}個の無効な行（NaNまたはinf）を削除しました.")
-    dropped_rows = df_akima_full.index.difference(pd.Index(range(initial_rows)))
-    for idx in dropped_rows:
-        print(f"    - 削除された行 {idx+1}: {df_akima_full.iloc[idx]['amp_Bm'] if idx < initial_rows else 'N/A'}")
+if USE_AKIMA_DATA:
+    print(f"\nAkima補間データを読み込んでいます...")
+    try:
+        df_akima_full = pd.read_excel(akima_excel_path, sheet_name='Interpolated Data', engine='openpyxl')
+        initial_rows = len(df_akima_full)
+        df_akima_full.replace([np.inf, -np.inf], np.nan, inplace=True)
+        df_akima_full.dropna(subset=['amp_Bm', 'amp_Hb'], inplace=True)
+        final_rows = len(df_akima_full)
+        if initial_rows > final_rows:
+            print(f"  - 警告: Akimaデータから{initial_rows - final_rows}個の無効な行（NaNまたはinf）を削除しました.")
+        
+        # Bmregの値に近い点を許容誤差でフィルタリング
+        target_regression_amps = np.round(np.arange(Bmreg_min, Bmreg_max + 1e-8, step), 2)
+        print(f"  - 対象の回帰振幅: {target_regression_amps}")
+        mask = np.any([np.isclose(df_akima_full['amp_Bm'], amp, rtol=1e-5, atol=1e-2) for amp in target_regression_amps], axis=0)
+        df_akima_filtered = df_akima_full[mask].copy()
 
-# Bmregの値に近い点を許容誤差でフィルタリング
-target_regression_amps = np.round(np.arange(Bmreg_min, Bmreg_max + 1e-8, step), 2)
-print(f"  - 対象の回帰振幅 (target_regression_amps): {target_regression_amps}")
-mask = np.any([np.isclose(df_akima_full['amp_Bm'], amp, rtol=1e-5, atol=1e-2) for amp in target_regression_amps], axis=0)
-df_akima_filtered = df_akima_full[mask].copy()
-print(f"  - Akimaデータ: {len(df_akima_filtered)}点の頂点データを学習データとして使用します。")
-print(f"  - 使用するBm値: {[round(x, 6) for x in sorted(df_akima_filtered['amp_Bm'].unique())]}")
-if 0.05 not in df_akima_filtered['amp_Bm'].values:
-    print("  - 警告: Bm=0.05 がフィルタリング後に見つかりません。手動で追加します。")
-    idx_05 = df_akima_full['amp_Bm'].sub(0.05).abs().idxmin()
-    if np.isclose(df_akima_full.loc[idx_05, 'amp_Bm'], 0.05, rtol=1e-5, atol=1e-2):
-        df_akima_filtered = pd.concat([df_akima_filtered, df_akima_full.loc[[idx_05]]]).drop_duplicates().reset_index(drop=True)
-        print(f"    - 手動追加: 行 {idx_05+1} (Bm={df_akima_full.loc[idx_05, 'amp_Bm']:.6f}, Hb={df_akima_full.loc[idx_05, 'amp_Hb']:.6f})")
-print(f"  - 最終使用Bm値: {[round(x, 6) for x in sorted(df_akima_filtered['amp_Bm'].unique())]}")
-Hb_vals = df_akima_filtered['amp_Hb'].values
-Bm_vals = df_akima_filtered['amp_Bm'].values
-for Hb, Bm in zip(Hb_vals, Bm_vals):
-    X_list.append([Bm, Bm]); Y_list.append([Hb])
-    X_list.append([Bm, -Bm]); Y_list.append([-Hb])
+        # 0.05Tの強制追加ロジック（対象範囲に含まれる場合のみ）
+        if 0.05 in target_regression_amps:
+            has_005 = np.any(np.isclose(df_akima_filtered['amp_Bm'], 0.05, rtol=1e-5, atol=1e-2))
+            if not has_005:
+                idx_05 = df_akima_full['amp_Bm'].sub(0.05).abs().idxmin()
+                if np.isclose(df_akima_full.loc[idx_05, 'amp_Bm'], 0.05, rtol=1e-5, atol=1e-2):
+                    df_akima_filtered = pd.concat([df_akima_filtered, df_akima_full.loc[[idx_05]]]).drop_duplicates().reset_index(drop=True)
+                    print(f"    - 手動追加: 行 {idx_05+1} (Bm={df_akima_full.loc[idx_05, 'amp_Bm']:.6f})")
+
+        print(f"  - Akimaデータ: {len(df_akima_filtered)}点の頂点データを学習データとして使用します。")
+        print(f"  - 使用するBm値: {[round(x, 6) for x in sorted(df_akima_filtered['amp_Bm'].unique())]}")
+
+        Hb_vals = df_akima_filtered['amp_Hb'].values
+        Bm_vals = df_akima_filtered['amp_Bm'].values
+        for Hb, Bm in zip(Hb_vals, Bm_vals):
+            X_list.append([Bm, Bm]); Y_list.append([Hb])
+            X_list.append([Bm, -Bm]); Y_list.append([-Hb])
+    except FileNotFoundError:
+        print(f"🔴 警告: Akimaデータファイルが見つかりません。Akimaデータなしで続行します。")
+else:
+    print("\nAkimaデータを使用しません（設定によりスキップ）。")
+
 
 X_train, Y_train = np.array(X_list), np.array(Y_list)
 print("✅ 学習データの読み込みが完了しました.")
 
 if np.isnan(X_train).any() or np.isinf(X_train).any() or np.isnan(Y_train).any() or np.isinf(Y_train).any():
-    print("🔴 エラー: 学習データにNaNまたはinfが含まれています。入力データを確認してください。")
-    exit()
+    print("🔴 エラー: 学習データにNaNまたはinfが含まれています。入力データを確認してください。"); exit()
 else:
     print("✅ 学習データの値は正常です.")
 
@@ -315,9 +298,9 @@ for amp in train_amp:
     plt.plot(df['H'], df['B'], marker='o', markersize=3, linestyle='-', label=f'{amp:.1f} T Loop', color='royalblue', alpha=0.4)
 
 plt.scatter(0, 0, s=80, c='black', marker='o', zorder=6, label='Origin Point')
-plt.scatter(Hb_vals, Bm_vals, s=80, c='red', marker='o', edgecolors='none', zorder=5, label='Akima Points (Used)')
-plt.scatter(-Hb_vals, -Bm_vals, s=80, c='red', marker='o', edgecolors='none', zorder=5)
-# plt.title(f'学習データ点の分布 - {mat_name} {target_freq}Hz (NN)')
+if USE_AKIMA_DATA and len(Bm_vals) > 0:
+    plt.scatter(Hb_vals, Bm_vals, s=80, c='red', marker='o', edgecolors='none', zorder=5, label='Akima Points (Used)')
+    plt.scatter(-Hb_vals, -Bm_vals, s=80, c='red', marker='o', edgecolors='none', zorder=5)
 plt.xlabel('H [A/m]'); plt.ylabel('B [T]')
 plt.grid(True, linestyle='--', alpha=0.6)
 plt.tight_layout()
@@ -333,7 +316,6 @@ data_points_plot_path = os.path.join(plot_output_dir, "training_data_points_vs_a
 if data_points_per_amp:
     amps = list(data_points_per_amp.keys())
     points = list(data_points_per_amp.values())
-
     plt.figure(figsize=(10, 6))
     plt.bar(amps, points, width=train_step*0.8, align='center', color='mediumseagreen', edgecolor='black')
     plt.title(f'学習データ点数 vs 磁束密度振幅 - {mat_name} {target_freq}Hz')
@@ -357,6 +339,11 @@ if should_load_model:
     try:
         saved_info_df = pd.read_excel(model_info_path, sheet_name='Info')
         saved_settings = pd.Series(saved_info_df.値.values, index=saved_info_df.項目).to_dict()
+        
+        # Akimaの使用有無も設定一致確認に含める
+        saved_use_akima = str(saved_settings.get('Akimaデータ使用', 'True')) 
+        current_use_akima = str(USE_AKIMA_DATA)
+        
         if (str(saved_settings.get('材料名')) == str(mat_name) and
             int(saved_settings.get('対象周波数 (Hz)')) == int(target_freq) and
             str(saved_settings.get('NN隠れ層')) == str(HIDDEN_LAYERS) and
@@ -366,6 +353,7 @@ if should_load_model:
             int(saved_settings.get('NNバッチサイズ')) == int(BATCH_SIZE) and
             float(saved_settings.get('NN勾配クリップ値', 1.0)) == float(GRAD_CLIP) and
             str(saved_settings.get('学習データ(振幅 T)')) == str(train_amp) and
+            saved_use_akima == current_use_akima and # ★ Akima設定の一致確認
             os.path.exists(model_weights_path) and os.path.exists(scaler_X_path) and os.path.exists(scaler_Y_path)):
             settings_match = True
     except Exception:
@@ -376,20 +364,17 @@ if should_load_model:
 # ==============================================================================
 def objective(trial):
     """Optunaの目的関数"""
-    # --- 1. ハイパーパラメータの提案 ---
     lr = trial.suggest_float("lr", LR_RANGE[0], LR_RANGE[1], log=True)
     n_layers = trial.suggest_int("n_layers", 1, 4)
     hidden_layers = [trial.suggest_int(f"n_units_l{i}", 32, 256) for i in range(n_layers)]
     activation_str = trial.suggest_categorical("activation", ["relu", "tanh"])
     batch_size = trial.suggest_categorical("batch_size", [32, 64, 128, 256])
     
-    # --- 2. モデルの構築 ---
     activation_func = get_activation_function(activation_str)
     model = FullyConnectedNN(input_size=2, output_size=1, hidden_layers=hidden_layers, activation_func=activation_func)
     optimizer = optim.Adam(model.parameters(), lr=lr)
     criterion = RMSELoss() if LossFunc == 'RMSE' else nn.MSELoss()
 
-    # --- 3. 学習データと検証データの分割 ---
     X_t, X_v, Y_t, Y_v = train_test_split(X_train_scaled, Y_train_scaled, test_size=0.2, random_state=42)
     X_train_tensor = torch.FloatTensor(X_t)
     Y_train_tensor = torch.FloatTensor(Y_t)
@@ -399,19 +384,17 @@ def objective(trial):
     train_dataset = TensorDataset(X_train_tensor, Y_train_tensor)
     train_loader = DataLoader(dataset=train_dataset, batch_size=batch_size, shuffle=True)
 
-    # --- 4. モデルの学習 ---
     for epoch in range(EPOCHS):
         model.train()
         for inputs, targets in train_loader:
             optimizer.zero_grad()
             outputs = model(inputs)
             loss = criterion(outputs, targets)
-            if torch.isnan(loss): return float('inf') # 損失がnanになったら、その試行は失敗
+            if torch.isnan(loss): return float('inf')
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=GRAD_CLIP)
             optimizer.step()
 
-    # --- 5. 検証と評価指標の返却 ---
     model.eval()
     with torch.no_grad():
         val_outputs = model(X_val_tensor)
@@ -425,17 +408,14 @@ if PERFORM_OPTUNA:
     print(f"試行回数: {N_TRIALS}")
     print("="*70)
 
-    # --- 変更後 ---
-    # データベースのファイル名を指定（拡張子は .db）
     db_url = "sqlite:///search_result.db"
-    study_name = "nn_hysteresis_study"  # 実験の名前
+    study_name = "nn_hysteresis_study" 
 
-    # storage引数を追加して、ファイルに保存させる
     study = optuna.create_study(
         direction="minimize", 
-        storage=db_url,           # ★ここが重要
-        study_name=study_name,    # ★実験名
-        load_if_exists=True       # 既に同じ名前の実験があれば続きからやる
+        storage=db_url, 
+        study_name=study_name, 
+        load_if_exists=True
     )
     study.optimize(objective, n_trials=N_TRIALS)
 
@@ -446,45 +426,31 @@ if PERFORM_OPTUNA:
     print(study.best_params)
     print("="*70)
 
-    # 最適化されたパラメータをグローバル変数に設定して、最終的な学習に使用
     best_params = study.best_params
     LEARNING_RATE = best_params['lr']
     HIDDEN_LAYERS = [best_params[f'n_units_l{i}'] for i in range(best_params['n_layers'])]
     activation_func_str = best_params['activation']
     BATCH_SIZE = best_params['batch_size']
-    PERFORM_TRAINING = True # 最適化後は必ず学習を実行
-    settings_match = False # 保存済みモデルは使わない
-
-# ... (Optunaの処理終わり)
+    PERFORM_TRAINING = True 
+    settings_match = False 
 
 # ==============================================================================
 # --- (追加) Excelからのパラメータ読み込みと適用 ---
 # ==============================================================================
 if not PERFORM_OPTUNA and LOAD_PARAMS_FROM_EXCEL and os.path.exists(PARAMS_EXCEL_PATH):
-    # 関数を呼び出してパラメータを取得
     loaded_hidden, loaded_act, loaded_lr, loaded_epochs, loaded_batch, loaded_clip = load_hyperparams_from_excel(PARAMS_EXCEL_PATH)
-    
-    # グローバル変数を上書き
     HIDDEN_LAYERS = loaded_hidden
-    activation_func_str = loaded_act # "ReLU()" のような文字列のまま渡すか、"relu"などの名前に変換が必要な場合は調整
-    # Excelに "ReLU()" と保存されている場合、get_activation_function はエラーになる可能性があるため
-    # 以下のような簡易的な変換を入れると安全です
+    activation_func_str = loaded_act 
     if "ReLU" in activation_func_str: activation_func_str = "relu"
     elif "Tanh" in activation_func_str: activation_func_str = "tanh"
     elif "Sigmoid" in activation_func_str: activation_func_str = "sigmoid"
-    
     LEARNING_RATE = loaded_lr
     EPOCHS = loaded_epochs
     BATCH_SIZE = loaded_batch
     GRAD_CLIP = loaded_clip
-    
     print("🔄 ハイパーパラメータをExcelの値で上書きしました。これを使って学習を行います。")
-    PERFORM_TRAINING = True # 再学習を強制
-    settings_match = False  # 保存済みモデルの使用をキャンセル
-
-# ==============================================================================
-# --- モデル学習と結果出力 ---
-# ... (以下、元のコード)
+    PERFORM_TRAINING = True 
+    settings_match = False 
 
 # ==============================================================================
 # --- モデル学習と結果出力 ---
@@ -492,17 +458,14 @@ if not PERFORM_OPTUNA and LOAD_PARAMS_FROM_EXCEL and os.path.exists(PARAMS_EXCEL
 
 if not settings_match and PERFORM_TRAINING:
     print("\nモデルの学習を開始します...")
-    # --- モデル構築 ---
     ACTIVATION_FUNC = get_activation_function(activation_func_str)
     model = FullyConnectedNN(input_size=2, output_size=1, hidden_layers=HIDDEN_LAYERS, activation_func=ACTIVATION_FUNC)
     
-    # --- データローダー準備 ---
     X_train_tensor = torch.FloatTensor(X_train_scaled)
     Y_train_tensor = torch.FloatTensor(Y_train_scaled)
     train_dataset = TensorDataset(X_train_tensor, Y_train_tensor)
     train_loader = DataLoader(dataset=train_dataset, batch_size=BATCH_SIZE, shuffle=True)
     
-    # --- 学習実行 ---
     criterion = RMSELoss() if LossFunc == 'RMSE' else nn.MSELoss()
     optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE)
     
@@ -538,20 +501,16 @@ else:
     print("✅ モデルとスケーラーの読み込みが完了しました.")
 
 # --- 結果プロット、Excel出力、およびRMSE計算 ---
-# ==============================================================================
-# --- 結果プロット、Excel出力、およびRMSE計算 ---
-# ==============================================================================
 print("\n回帰結果を計算し、出力しています...")
 plt.figure(figsize=(10, 8))
 plt.title(f'NN Regression vs Reference - {mat_name} {target_freq}Hz')
-plt.scatter(Hb_vals, Bm_vals, marker='x', c='k', s=50, zorder=3, label='Akima (Train)')
-plt.scatter(-Hb_vals, -Bm_vals, marker='x', c='k', s=50, zorder=3, label='_nolegend_')
+if USE_AKIMA_DATA and len(Bm_vals) > 0:
+    plt.scatter(Hb_vals, Bm_vals, marker='x', c='k', s=50, zorder=3, label='Akima (Train)')
+    plt.scatter(-Hb_vals, -Bm_vals, marker='x', c='k', s=50, zorder=3, label='_nolegend_')
 
 pred_amps = np.round(np.arange(Bmreg_min, Bmreg_max + 1e-8, step), 2)
-# train_ampを丸めてセットに変換（浮動小数点数の比較のため）
 train_amp_set = set(np.round(train_amp, 2)) 
 
-# 凡例用のダミープロット
 plt.plot([], [], color='red', linestyle='-', label='Extrapolation (Not in Train)')
 plt.plot([], [], color='blue', linestyle='-', alpha=0.6, label='Interpolation (In Train)')
 
@@ -562,7 +521,7 @@ with torch.no_grad():
     for i, amp in enumerate(pred_amps):
         num_points = int(round(2 * amp / step)) + 1
         if num_points <= 1: 
-            print(f"   Bm = {amp:.2f}T, 点数が1以下なのでスキップします。")
+            print(f"   Bm = {amp:.2f}T, 点数が1以下なのでスキップします。")
             continue
         
         Breg = np.linspace(-amp, amp, num_points)
@@ -576,7 +535,6 @@ with torch.no_grad():
         
         if i < len(truth_data_blocks):
             df_truth_loop = truth_data_blocks[i]
-            # B軸の点群が一致するか確認
             if 'B' in df_truth_loop.columns and 'H_descending' in df_truth_loop.columns and np.allclose(Breg, df_truth_loop['B'].values, rtol=1e-5, atol=1e-2):
                 has_ref_data = True
                 h_true_desc = df_truth_loop['H_descending'].values
@@ -585,7 +543,7 @@ with torch.no_grad():
                 rmse = np.sqrt(np.mean((h_true_desc - Hpred)**2))
                 relative_rmse = rmse / abs(Hb_pred) if Hb_pred != 0 else np.nan
                 rmse_results.append({'Amplitude (T)': amp, 'RMSE (H_descending)': rmse, 'Hb [A/m]': Hb_pred, 'RMSE/Hb': relative_rmse})
-                print(f"   Bm = {amp:.2f}T, RMSE = {rmse:.4f}, Hb = {Hb_pred:.2f}, RMSE/Hb = {relative_rmse:.4%}")
+                print(f"   Bm = {amp:.2f}T, RMSE = {rmse:.4f}, Hb = {Hb_pred:.2f}, RMSE/Hb = {relative_rmse:.4%}")
                 
                 label_ref = f'Ref {amp:.2f}T' if amp in [pred_amps.min(), 1.0, pred_amps.max()] else None
                 plt.plot(h_true_desc, b_true, marker='.', color='gray', linestyle='none', markersize=5, zorder=1, label=label_ref)
@@ -596,15 +554,14 @@ with torch.no_grad():
                 })
                 comparison_sheets_data.append({'amp': amp, 'df': df_comp})
             else:
-                print(f"   Bm = {amp:.2f}T, 警告: 正解データとB軸の点が一致しないためRMSE計算と参照プロットをスキップします。")
+                print(f"   Bm = {amp:.2f}T, 警告: 正解データとB軸の点が一致しないためRMSE計算と参照プロットをスキップします。")
         else:
-             print(f"   Bm = {amp:.2f}T, 警告: 対応する正解データブロックが見つかりません。")
+             print(f"   Bm = {amp:.2f}T, 警告: 対応する正解データブロックが見つかりません。")
 
-        # ★★★ 回帰結果のプロット色分け ★★★
         if amp in train_amp_set:
-            plt.plot(Hpred, Breg, color='blue', linestyle='-', zorder=2, alpha=0.6) # 学習データに含まれる振幅
+            plt.plot(Hpred, Breg, color='blue', linestyle='-', zorder=2, alpha=0.6) 
         else:
-            plt.plot(Hpred, Breg, color='red', linestyle='-', zorder=2) # 学習データに含まれない振幅（外挿）
+            plt.plot(Hpred, Breg, color='red', linestyle='-', zorder=2) 
 
 plt.xlabel(r'$\it{H}$ [A/m]'); plt.ylabel(r'$\it{B}$ [T]'); 
 plt.grid(True)
@@ -622,9 +579,7 @@ if rmse_results:
     df_rmse = pd.DataFrame(rmse_results)
     print(df_rmse.to_string(index=False))
     
-    # ★★★ 修正箇所: 出力パスをご指定の絶対パスに変更 ★★★
-    final_output_dir = r"C:\Users\RM-2503-1\Desktop\M1\3_研究\NN_perf\3.Answer\NN_regression_results\50A470\20"
-    
+    final_output_dir = os.path.join(output_base, mat_name, str(target_freq))
     os.makedirs(final_output_dir, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     filename = f"{timestamp}_RMSE_summary_{mat_name}_{target_freq}hz_NN.xlsx"
@@ -644,20 +599,16 @@ if rmse_results:
     print(f"\n結果をExcelファイルに保存します:\n {rmse_out_path}")
     try:
         with pd.ExcelWriter(rmse_out_path, engine='openpyxl') as writer:
-            # Infoシートの作成
             info_df = create_info_df()
             info_df.to_excel(writer, sheet_name='Info', index=False)
             
-            # RMSE Summaryシートの作成
             df_rmse.to_excel(writer, sheet_name='RMSE_Summary', index=False)
             
-            # 各振幅の比較シートの作成
             for item in comparison_sheets_data:
                 amp, df_data = item['amp'], item['df']
                 sheet_name = f"{amp:.2f}T"
                 df_data.to_excel(writer, sheet_name=sheet_name, index=False)
                 ws = writer.sheets[sheet_name]
-                # グラフをシートに追加
                 add_comparison_chart_to_sheet(ws, len(df_data))
                 
         print(f"\n✅ 結果を保存しました.")
