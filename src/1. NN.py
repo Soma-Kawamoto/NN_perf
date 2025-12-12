@@ -23,6 +23,7 @@ from datetime import datetime
 import configparser
 from sklearn.model_selection import train_test_split
 import optuna
+import time
 
 plt.rcParams["font.family"] = "Times New Roman"
 plt.rcParams["font.size"] = 20
@@ -358,7 +359,7 @@ if should_load_model:
             settings_match = True
     except Exception:
         settings_match = False
-
+print("学習時間計算中")
 # ==============================================================================
 # --- Optunaによるハイパーパラメータ最適化 ---
 # ==============================================================================
@@ -405,6 +406,7 @@ def objective(trial):
 if PERFORM_OPTUNA:
     print("\n" + "="*70)
     print("Optunaによるハイパーパラメータ探索を開始します...")
+    start_time = time.time()
     print(f"試行回数: {N_TRIALS}")
     print("="*70)
 
@@ -421,6 +423,8 @@ if PERFORM_OPTUNA:
 
     print("\n" + "="*70)
     print("Optunaによる探索が完了しました。")
+    end_time = time.time()
+    print("最適化に要した時間は", end_time - start_time, "秒です")
     print(f"最良スコア (検証RMSE): {study.best_value}")
     print("最適なハイパーパラメータ:")
     print(study.best_params)
