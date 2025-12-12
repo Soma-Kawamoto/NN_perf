@@ -407,6 +407,7 @@ if PERFORM_OPTUNA:
     print("\n" + "="*70)
     print("Optunaによるハイパーパラメータ探索を開始します...")
     start_time = time.time()
+    print("最適化に要する時間を計算します", "[start_time=",start_time,"]")
     print(f"試行回数: {N_TRIALS}")
     print("="*70)
 
