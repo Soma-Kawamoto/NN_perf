@@ -24,6 +24,7 @@ import configparser
 from sklearn.model_selection import train_test_split
 import optuna
 from typing import Any, Dict, List, Tuple
+from sklearn.model_selection import KFold # 追加
 import time
 
 plt.rcParams["font.family"] = "Times New Roman"
@@ -32,10 +33,7 @@ plt.rcParams["font.size"] = 20
 # ==============================================================================
 # --- 設定ファイルの読み込み ---
 # ==============================================================================
-try:
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-except NameError:
-    script_dir = os.getcwd()
+script_dir = os.path.dirname(os.path.abspath(__file__))
 
 config_path = os.path.join(script_dir, "..", "config", "1. NN.ini")
 config = configparser.ConfigParser()
@@ -122,14 +120,14 @@ class RMSELoss(nn.Module):
     def forward(self, yhat, y):
         return torch.sqrt(self.mse(yhat, y) + self.eps)
 
-def get_activation_function(name):
+def get_activation_function(name: str) -> nn.Module:
     if name.lower() == 'relu': return nn.ReLU()
     elif name.lower() == 'tanh': return nn.Tanh()
     elif name.lower() == 'sigmoid': return nn.Sigmoid()
     else: raise ValueError(f"未対応の活性化関数です: {name}")
 
 class FullyConnectedNN(nn.Module):
-    def __init__(self, input_size, output_size, hidden_layers, activation_func=nn.ReLU()):
+    def __init__(self, input_size: int, output_size: int, hidden_layers: List[int], activation_func=nn.ReLU()):
         super(FullyConnectedNN, self).__init__()
         layers = []
         in_size = input_size
@@ -164,7 +162,7 @@ def create_info_df(amp_value=None):
         info_data["値"].append(f"{amp_value:.2f}")
     return pd.DataFrame(info_data)
 
-def load_hyperparams_from_excel(excel_path):
+def load_hyperparams_from_excel(excel_path: str) -> Tuple[List[int], str, float, int, int, float]:
     print(f"\n📂 Excelファイルからハイパーパラメータを読み込んでいます: {excel_path}")
     try:
         df_info = pd.read_excel(excel_path, sheet_name='Info', engine='openpyxl')
@@ -238,6 +236,9 @@ for amp in train_amp:
     df = pd.read_excel(path, engine='openpyxl')
     B, H = df['B'].values, df['H'].values
     for b_val, h_val in zip(B, H): X_list.append([amp, b_val]); Y_list.append([h_val])
+
+# ★★★ 追加: 通常データの数を記録（ここで区切るため） ★★★
+NUM_NORMAL_SAMPLES = len(X_list) 
 
 # ★★★ Akimaデータの読み込み処理（USE_AKIMA_DATAフラグで分岐） ★★★
 Hb_vals, Bm_vals = np.array([]), np.array([]) # プロット用に初期化
@@ -335,11 +336,9 @@ scaler_X = StandardScaler()
 scaler_Y = StandardScaler()
 X_train_scaled = scaler_X.fit_transform(X_train)
 Y_train_scaled = scaler_Y.fit_transform(Y_train)
-
 should_load_model = not PERFORM_TRAINING
-settings_match = False  # NNのハイパーパラメータの初期値: 設定が既存のものがなかった場合は学習を行う
-if should_load_model:  # PERFORM_TRAININGがFalseの場合、既存モデルのロードを試みる
-    print("\n既存のモデル情報を確認しています...")
+settings_match = False
+if should_load_model:
     try:
         saved_info_df = pd.read_excel(model_info_path, sheet_name='Info')
         saved_settings = pd.Series(saved_info_df.値.values, index=saved_info_df.項目).to_dict()
@@ -366,46 +365,85 @@ print("学習時間計算中")
 # ==============================================================================
 # --- Optunaによるハイパーパラメータ最適化 ---
 # ==============================================================================
-def objective(trial):
-    """Optunaの目的関数 探索空間はここから編集"""
+def objective(trial: optuna.trial.Trial) -> float:
+    """Optunaの目的関数 (Akima固定 5-Fold CV版)"""
+    # --- 1. ハイパーパラメータの提案 ---
     lr = trial.suggest_float("lr", LR_RANGE[0], LR_RANGE[1], log=True)
     n_layers = trial.suggest_int("n_layers", 1, 4)
     hidden_layers = [trial.suggest_int(f"n_units_l{i}", 32, 256) for i in range(n_layers)]
     activation_str = trial.suggest_categorical("activation", ["relu", "tanh"])
     batch_size = trial.suggest_categorical("batch_size", [32, 64, 128, 256])
     
+    # 共通の設定
     activation_func = get_activation_function(activation_str)
-    model = FullyConnectedNN(input_size=2, output_size=1, hidden_layers=hidden_layers, activation_func=activation_func)
-    optimizer = optim.Adam(model.parameters(), lr=lr)
     criterion = RMSELoss() if LossFunc == 'RMSE' else nn.MSELoss()
-
-    X_t, X_v, Y_t, Y_v = train_test_split(X_train_scaled, Y_train_scaled, test_size=0.2, random_state=42)
-    X_train_tensor = torch.FloatTensor(X_t)
-    Y_train_tensor = torch.FloatTensor(Y_t)
-    X_val_tensor = torch.FloatTensor(X_v)
-    Y_val_tensor = torch.FloatTensor(Y_v)
     
-    train_dataset = TensorDataset(X_train_tensor, Y_train_tensor)
-    train_loader = DataLoader(dataset=train_dataset, batch_size=batch_size, shuffle=True)
+    # --- 2. データの分離 (通常データとAkimaデータ) ---
+    # グローバル変数の X_train_scaled, NUM_NORMAL_SAMPLES を使用
+    X_normal = X_train_scaled[:NUM_NORMAL_SAMPLES]
+    Y_normal = Y_train_scaled[:NUM_NORMAL_SAMPLES]
+    
+    X_akima = X_train_scaled[NUM_NORMAL_SAMPLES:]
+    Y_akima = Y_train_scaled[NUM_NORMAL_SAMPLES:]
 
-    for epoch in range(EPOCHS):
-        model.train()
-        for inputs, targets in train_loader:
-            optimizer.zero_grad()
-            outputs = model(inputs)
-            loss = criterion(outputs, targets)
-            if torch.isnan(loss): return float('inf')
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=GRAD_CLIP)
-            optimizer.step()
+    # --- 3. K-Fold CV の準備 ---
+    K_SPLITS = 5
+    kf = KFold(n_splits=K_SPLITS, shuffle=True, random_state=42)
+    
+    fold_scores = [] 
 
-    model.eval()
-    with torch.no_grad():
-        val_outputs = model(X_val_tensor)
-        val_loss = criterion(val_outputs, Y_val_tensor)
+    # --- 4. Foldごとのループ (分割は「通常データ」のみで行う) ---
+    for fold, (train_idx, val_idx) in enumerate(kf.split(X_normal)):
+        
+        # 通常データの分割
+        X_t_norm, X_v_norm = X_normal[train_idx], X_normal[val_idx]
+        Y_t_norm, Y_v_norm = Y_normal[train_idx], Y_normal[val_idx]
 
-    return val_loss.item()
+        # ★重要: 学習データには Akimaデータを結合する (検証データには含めない)
+        X_t = np.concatenate([X_t_norm, X_akima], axis=0)
+        Y_t = np.concatenate([Y_t_norm, Y_akima], axis=0)
+        
+        # 検証データは通常データの一部のみ
+        X_v = X_v_norm
+        Y_v = Y_v_norm
 
+        # Tensor化
+        X_train_tensor = torch.FloatTensor(X_t)
+        Y_train_tensor = torch.FloatTensor(Y_t)
+        X_val_tensor = torch.FloatTensor(X_v)
+        Y_val_tensor = torch.FloatTensor(Y_v)
+
+        # DataLoader作成
+        train_dataset = TensorDataset(X_train_tensor, Y_train_tensor)
+        train_loader = DataLoader(dataset=train_dataset, batch_size=batch_size, shuffle=True)
+
+        # モデルとオプティマイザの初期化
+        model = FullyConnectedNN(input_size=2, output_size=1, hidden_layers=hidden_layers, activation_func=activation_func)
+        optimizer = optim.Adam(model.parameters(), lr=lr)
+
+        # --- 学習ループ ---
+        for epoch in range(EPOCHS):
+            model.train()
+            for inputs, targets in train_loader:
+                optimizer.zero_grad()
+                outputs = model(inputs)
+                loss = criterion(outputs, targets)
+                if torch.isnan(loss):
+                    return float('inf')
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=GRAD_CLIP)
+                optimizer.step()
+
+        # --- 検証 ---
+        model.eval()
+        with torch.no_grad():
+            val_outputs = model(X_val_tensor)
+            val_loss = criterion(val_outputs, Y_val_tensor)
+            fold_scores.append(val_loss.item())
+    
+    mean_rmse = np.mean(fold_scores)
+    return mean_rmse
+# --- Optuna最適化の実行 ---
 if PERFORM_OPTUNA:
     print("\n" + "="*70)
     print("Optunaによるハイパーパラメータ探索を開始します...")
@@ -503,7 +541,7 @@ if not settings_match and PERFORM_TRAINING:
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=GRAD_CLIP)
             optimizer.step()
-        if (epoch + 1) % 100 == 0 or epoch == 0:
+        if (epoch + 1) % 200 == 0 or epoch == 0:  # 200エポックごとと最初のエポックでログ出力
             print(f'Epoch [{epoch+1}/{EPOCHS}], Loss: {loss.item():.6f}')
             
     print("✅ 学習が完了しました。")
