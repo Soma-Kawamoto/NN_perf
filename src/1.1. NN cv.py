@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 全結合型ニューラルネットワーク (NN) による B-H ヒステリシス回帰スクリプト
-【v8: Akimaデータ使用有無(USE_AKIMA_DATA)の切り替え機能を追加】
+【v9: CV実装(Akima学習固定) + GPU対応 + 型ヒント追加 版】
 """
 import os
 import numpy as np
@@ -21,10 +21,9 @@ import japanize_matplotlib
 from openpyxl.drawing.image import Image as OpenpyxlImage
 from datetime import datetime
 import configparser
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import train_test_split, KFold
 import optuna
 from typing import Any, Dict, List, Tuple
-from sklearn.model_selection import KFold # 追加
 import time
 
 plt.rcParams["font.family"] = "Times New Roman"
@@ -33,7 +32,10 @@ plt.rcParams["font.size"] = 20
 # ==============================================================================
 # --- 設定ファイルの読み込み ---
 # ==============================================================================
-script_dir = os.path.dirname(os.path.abspath(__file__))
+try:
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+except NameError:
+    script_dir = os.getcwd()
 
 config_path = os.path.join(script_dir, "..", "config", "1. NN.ini")
 config = configparser.ConfigParser()
@@ -45,6 +47,7 @@ mat_name = config.get('settings', 'mat_name')
 target_freq = config.getint('settings', 'target_freq')
 PERFORM_OPTUNA = config.getboolean('settings', 'PERFORM_OPTUNA', fallback=False)
 N_TRIALS = config.getint('settings', 'N_TRIALS', fallback=50)
+USE_GPU_SETTING = config.getboolean('settings', 'USE_GPU', fallback=True) # GPU設定
 
 # [architecture]
 hidden_layers_str = config.get('architecture', 'HIDDEN_LAYERS')
@@ -74,7 +77,6 @@ train_step = config.getfloat('data', 'train_step')
 train_amp = list(np.round(np.arange(Bmtrain_min, Bmtrain_max + 1e-8, train_step), 1))
 
 # ★★★ Akimaデータを学習データとして使用するかどうか (True/False) ★★★
-# iniファイルに設定がない場合はデフォルトでTrueとします
 USE_AKIMA_DATA = config.getboolean('data', 'USE_AKIMA_DATA', fallback=True)
 
 # [regression]
@@ -112,6 +114,25 @@ scaler_X_path = os.path.join(model_dir, f"scaler_X_{mat_name}_{target_freq}hz.pk
 scaler_Y_path = os.path.join(model_dir, f"scaler_Y_{mat_name}_{target_freq}hz.pkl")
 truth_data_path = os.path.join(truth_data_base, f"summary_{mat_name}_{step}.xlsx")
 
+# ==============================================================================
+# デバイスの決定ロジック
+# ==============================================================================
+def get_device(use_gpu_setting: bool) -> torch.device:
+    """設定と環境に基づいてデバイスを決定する"""
+    if use_gpu_setting and torch.cuda.is_available():
+        current_device = torch.device("cuda")
+        print(f"🚀 GPU (CUDA) を使用して計算を行います: {torch.cuda.get_device_name(0)}")
+    else:
+        if use_gpu_setting and not torch.cuda.is_available():
+            print("⚠️ GPU使用が設定されていますが、利用可能なGPUが見つかりません。CPUを使用します。")
+        current_device = torch.device("cpu")
+        print("💻 CPU を使用して計算を行います")
+    return current_device
+
+# デバイスを決定（グローバル変数として保持）
+device = get_device(USE_GPU_SETTING)
+
+
 class RMSELoss(nn.Module):
     def __init__(self, eps=1e-6):
         super().__init__()
@@ -127,7 +148,7 @@ def get_activation_function(name: str) -> nn.Module:
     else: raise ValueError(f"未対応の活性化関数です: {name}")
 
 class FullyConnectedNN(nn.Module):
-    def __init__(self, input_size: int, output_size: int, hidden_layers: List[int], activation_func=nn.ReLU()):
+    def __init__(self, input_size: int, output_size: int, hidden_layers: List[int], activation_func: nn.Module = nn.ReLU()):
         super(FullyConnectedNN, self).__init__()
         layers = []
         in_size = input_size
@@ -145,12 +166,12 @@ def create_info_df(amp_value=None):
         "項目": [
             "実行日時", "材料名", "対象周波数 (Hz)",
             "NN隠れ層", "NN活性化関数", "NN学習率", "NNエポック数", "NNバッチサイズ", "NN勾配クリップ値", "NN損失関数",
-            "学習データ(振幅 T)", "Akimaデータ使用"
+            "学習データ(振幅 T)", "Akimaデータ使用", "使用デバイス"
         ],
         "値": [
             datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             mat_name, target_freq, str(HIDDEN_LAYERS), activation_func_str, LEARNING_RATE, EPOCHS, BATCH_SIZE, GRAD_CLIP, LossFunc,
-            str(train_amp), str(USE_AKIMA_DATA)
+            str(train_amp), str(USE_AKIMA_DATA), str(device)
         ]
     }
     if USE_AKIMA_DATA:
@@ -237,8 +258,8 @@ for amp in train_amp:
     B, H = df['B'].values, df['H'].values
     for b_val, h_val in zip(B, H): X_list.append([amp, b_val]); Y_list.append([h_val])
 
-# ★★★ 追加: 通常データの数を記録（ここで区切るため） ★★★
-NUM_NORMAL_SAMPLES = len(X_list) 
+# ★★★ 通常データの数を記録（Akimaとの区別用） ★★★
+NUM_NORMAL_SAMPLES = len(X_list)
 
 # ★★★ Akimaデータの読み込み処理（USE_AKIMA_DATAフラグで分岐） ★★★
 Hb_vals, Bm_vals = np.array([]), np.array([]) # プロット用に初期化
@@ -362,8 +383,9 @@ if should_load_model:
     except Exception:
         settings_match = False
 print("学習時間計算中")
+
 # ==============================================================================
-# --- Optunaによるハイパーパラメータ最適化 ---
+# --- Optunaによるハイパーパラメータ最適化 (CV版 + GPU + Akima固定) ---
 # ==============================================================================
 def objective(trial: optuna.trial.Trial) -> float:
     """Optunaの目的関数 (Akima固定 5-Fold CV版)"""
@@ -417,32 +439,45 @@ def objective(trial: optuna.trial.Trial) -> float:
         train_dataset = TensorDataset(X_train_tensor, Y_train_tensor)
         train_loader = DataLoader(dataset=train_dataset, batch_size=batch_size, shuffle=True)
 
-        # モデルとオプティマイザの初期化
-        model = FullyConnectedNN(input_size=2, output_size=1, hidden_layers=hidden_layers, activation_func=activation_func)
+        # モデルとオプティマイザの初期化 (GPU転送)
+        model = FullyConnectedNN(
+            input_size=2, output_size=1, hidden_layers=hidden_layers, activation_func=activation_func
+        ).to(device)
+        
         optimizer = optim.Adam(model.parameters(), lr=lr)
 
         # --- 学習ループ ---
         for epoch in range(EPOCHS):
             model.train()
             for inputs, targets in train_loader:
+                # データをGPUへ
+                inputs, targets = inputs.to(device), targets.to(device)
+                
                 optimizer.zero_grad()
                 outputs = model(inputs)
                 loss = criterion(outputs, targets)
+                
                 if torch.isnan(loss):
                     return float('inf')
+                
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=GRAD_CLIP)
                 optimizer.step()
 
         # --- 検証 ---
         model.eval()
+        # 検証データもGPUへ
+        X_val_gpu = X_val_tensor.to(device)
+        Y_val_gpu = Y_val_tensor.to(device)
+        
         with torch.no_grad():
-            val_outputs = model(X_val_tensor)
-            val_loss = criterion(val_outputs, Y_val_tensor)
+            val_outputs = model(X_val_gpu)
+            val_loss = criterion(val_outputs, Y_val_gpu)
             fold_scores.append(val_loss.item())
     
     mean_rmse = np.mean(fold_scores)
     return mean_rmse
+
 # --- Optuna最適化の実行 ---
 if PERFORM_OPTUNA:
     print("\n" + "="*70)
@@ -455,7 +490,7 @@ if PERFORM_OPTUNA:
     db_url = "sqlite:///search_result.db"
     study_name = "nn_hysteresis_study_gaisou" 
     
-# --- ★★★ 安全策: 実験名の確認と一時停止 ★★★ ---
+    # --- ★★★ 安全策: 実験名の確認と一時停止 ★★★ ---
     print(f"\n【実行前の確認】")
     print(f"  📂 データベース: {db_url}")
     print(f"  🏷️  実験名 (Study Name): {study_name}")
@@ -484,10 +519,10 @@ if PERFORM_OPTUNA:
     print("最適化に要した時間は", end_time - start_time, "秒です")
     print(f"最良スコア (検証RMSE): {study.best_value}")
     print("最適なハイパーパラメータ:")
-    print(study.best_params)
+    best_params: dict[str, Any] = study.best_params # 型ヒント追加
+    print(best_params)
     print("="*70)
 
-    best_params: dict[str, Any] = study.best_params
     LEARNING_RATE = best_params['lr']
     HIDDEN_LAYERS = [best_params[f'n_units_l{i}'] for i in range(best_params['n_layers'])]
     activation_func_str = best_params['activation']
@@ -514,13 +549,17 @@ if not PERFORM_OPTUNA and LOAD_PARAMS_FROM_EXCEL and os.path.exists(PARAMS_EXCEL
     settings_match = False 
 
 # ==============================================================================
-# --- モデル学習と結果出力 ---
+# --- モデル学習と結果出力 (GPU対応) ---
 # ==============================================================================
 
 if not settings_match and PERFORM_TRAINING:
     print("\nモデルの学習を開始します...")
     ACTIVATION_FUNC = get_activation_function(activation_func_str)
-    model = FullyConnectedNN(input_size=2, output_size=1, hidden_layers=HIDDEN_LAYERS, activation_func=ACTIVATION_FUNC)
+    
+    # モデル構築とGPU転送
+    model = FullyConnectedNN(
+        input_size=2, output_size=1, hidden_layers=HIDDEN_LAYERS, activation_func=ACTIVATION_FUNC
+    ).to(device)
     
     X_train_tensor = torch.FloatTensor(X_train_scaled)
     Y_train_tensor = torch.FloatTensor(Y_train_scaled)
@@ -533,19 +572,27 @@ if not settings_match and PERFORM_TRAINING:
     for epoch in range(EPOCHS):
         model.train()
         for inputs, targets in train_loader:
+            # データをGPUへ
+            inputs, targets = inputs.to(device), targets.to(device)
+            
             optimizer.zero_grad()
             outputs = model(inputs)
             loss = criterion(outputs, targets)
+            
             if torch.isnan(loss):
                 print(f"🔴 エラー: Epoch {epoch+1}で損失がnanになりました。学習を停止します。"); exit()
+            
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=GRAD_CLIP)
             optimizer.step()
-        if (epoch + 1) % 200 == 0 or epoch == 0:  # 200エポックごとと最初のエポックでログ出力
+            
+        if (epoch + 1) % 100 == 0 or epoch == 0:
             print(f'Epoch [{epoch+1}/{EPOCHS}], Loss: {loss.item():.6f}')
             
     print("✅ 学習が完了しました。")
-    torch.save(model.state_dict(), model_weights_path)
+    # 保存時はCPUに戻して保存する（汎用性のため）
+    torch.save(model.to('cpu').state_dict(), model_weights_path)
+    
     with open(scaler_X_path, 'wb') as f: pickle.dump(scaler_X, f)
     with open(scaler_Y_path, 'wb') as f: pickle.dump(scaler_Y, f)
     info_df = create_info_df()
@@ -557,6 +604,9 @@ else:
     ACTIVATION_FUNC = get_activation_function(activation_func_str)
     model = FullyConnectedNN(input_size=2, output_size=1, hidden_layers=HIDDEN_LAYERS, activation_func=ACTIVATION_FUNC)
     model.load_state_dict(torch.load(model_weights_path))
+    # 推論のためにデバイスへ送る
+    model.to(device)
+    
     with open(scaler_X_path, 'rb') as f: scaler_X = pickle.load(f)
     with open(scaler_Y_path, 'rb') as f: scaler_Y = pickle.load(f)
     print("✅ モデルとスケーラーの読み込みが完了しました.")
@@ -589,8 +639,13 @@ with torch.no_grad():
         X_pred = np.array([[amp, b] for b in Breg])
         X_pred_scaled = scaler_X.transform(X_pred)
         X_pred_tensor = torch.FloatTensor(X_pred_scaled)
-        Hpred_scaled = model(X_pred_tensor)
-        Hpred_means = scaler_Y.inverse_transform(Hpred_scaled.numpy())
+        
+        # GPUで推論
+        X_pred_gpu = X_pred_tensor.to(device)
+        Hpred_scaled = model(X_pred_gpu)
+        
+        # 結果をCPUに戻してNumpy化
+        Hpred_means = scaler_Y.inverse_transform(Hpred_scaled.cpu().numpy())
         Hpred = Hpred_means.flatten()
         has_ref_data = False
         
