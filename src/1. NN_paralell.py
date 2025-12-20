@@ -415,7 +415,7 @@ if PERFORM_OPTUNA:
     # 2台のPCからアクセスできる「共有フォルダ」のパスを指定します。
     # 例: ネットワークドライブ (Z:\...) や UNCパス (\\Server\Share\...)
     # ==============================================================================
-    SHARED_DIR = r"\\172.20.145.50\Analysis\2024\Kawamoto"  # ← ここを実際の共有パスに変更！
+    SHARED_DIR = r"\\172.20.145.93\Optuna_Share"  # ← ここを実際の共有パスに変更！
     
     # データベースファイル名
     DB_FILENAME = "distributed_search_result.db"
