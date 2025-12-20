@@ -403,38 +403,68 @@ def objective(trial):
 
     return val_loss.item()
 
+# ... (前略)
+
 if PERFORM_OPTUNA:
     print("\n" + "="*70)
-    print("Optunaによるハイパーパラメータ探索を開始します...")
-    start_time = time.time()
-    print("最適化に要する時間を計算します", "[start_time=",start_time,"]")
-    print(f"試行回数: {N_TRIALS}")
+    print("Optunaによるハイパーパラメータ探索を開始します... (分散学習モード)")
     print("="*70)
 
-    db_url = "sqlite:///search_result.db"
-    study_name = "nn_hysteresis_study_gaisou" 
+    # ==============================================================================
+    # ★★★ 分散学習用の設定 (ここを書き換えてください) ★★★
+    # 2台のPCからアクセスできる「共有フォルダ」のパスを指定します。
+    # 例: ネットワークドライブ (Z:\...) や UNCパス (\\Server\Share\...)
+    # ==============================================================================
+    SHARED_DIR = r"\\172.20.145.50\Analysis\2024\Kawamoto"  # ← ここを実際の共有パスに変更！
     
-# --- ★★★ 安全策: 実験名の確認と一時停止 ★★★ ---
-    print(f"\n【実行前の確認】")
-    print(f"  📂 データベース: {db_url}")
-    print(f"  🏷️  実験名 (Study Name): {study_name}")
-    print(f"  ⚠️  注意: 同じ実験名が存在する場合、続きから学習します。")
-    print(f"  (新規に行う場合は、dbファイルを削除するか実験名を変更してください)")
+    # データベースファイル名
+    DB_FILENAME = "distributed_search_result.db"
+    
+    # 実験名（2台とも「完全に同じ名前」にしてください）
+    STUDY_NAME = "nn_hysteresis_distributed_study"
+    # ==============================================================================
+
+    # 共有フォルダが存在するか確認
+    if not os.path.exists(SHARED_DIR):
+        print(f"\n🔴 エラー: 指定された共有フォルダが見つかりません: {SHARED_DIR}")
+        print("パスが正しいか、ネットワークドライブが接続されているか確認してください。")
+        exit()
+
+    # データベースのパスを作成
+    db_path = os.path.join(SHARED_DIR, DB_FILENAME)
+    # SQLiteのURL形式に変換 (Windowsのバックスラッシュをスラッシュに置換)
+    db_url = f"sqlite:///{db_path.replace(os.sep, '/')}"
+
+    # --- 安全策: 確認と一時停止 ---
+    print(f"\n【分散学習の実行確認】")
+    print(f"  📂 共有DBパス: {db_path}")
+    print(f"  🔗 DB URL:     {db_url}")
+    print(f"  🏷️  実験名:     {STUDY_NAME}")
+    print("-" * 50)
+    print("  💡 2台目のPCでも、これと「全く同じ設定」で実行してください。")
+    print("  💡 データベースを共有することで、手分けして探索を行います。")
     print("-" * 50)
     
-    # ユーザーの入力を待つ (Enterが押されるまでここで止まります)
     try:
         input(">> 設定に問題なければ [Enter] キーを押して開始してください... (中止は Ctrl+C)")
     except KeyboardInterrupt:
         print("\n\n⛔ ユーザーによって処理が中断されました。終了します。")
         exit()
-    # --------------------------------------------------
+
+    start_time = time.time()
+    print(f"\n🚀 最適化を開始します... [試行回数: {N_TRIALS}]")
+
+    # 分散学習の場合、データベースのロック待ちが発生することがあるため
+    # load_if_exists=True で既存のDBを読みに行かせます
     study = optuna.create_study(
         direction="minimize", 
         storage=db_url, 
-        study_name=study_name, 
+        study_name=STUDY_NAME, 
         load_if_exists=True
     )
+    
+    # 最適化実行
+    # catch引数を指定しておくと、万が一のエラー時もstudyが壊れにくい
     study.optimize(objective, n_trials=N_TRIALS)
 
     print("\n" + "="*70)
@@ -446,7 +476,9 @@ if PERFORM_OPTUNA:
     print(study.best_params)
     print("="*70)
 
+    # (以下、最適化後の学習処理へ続く...)
     best_params = study.best_params
+    # ...
     LEARNING_RATE = best_params['lr']
     HIDDEN_LAYERS = [best_params[f'n_units_l{i}'] for i in range(best_params['n_layers'])]
     activation_func_str = best_params['activation']
