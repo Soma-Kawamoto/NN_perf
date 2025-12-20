@@ -24,6 +24,7 @@ import configparser
 from sklearn.model_selection import train_test_split
 import optuna
 from sklearn.model_selection import KFold # 追加
+from typing import Any
 import time
 
 plt.rcParams["font.family"] = "Times New Roman"
@@ -87,12 +88,9 @@ step = config.getfloat('regression', 'step')
 # ==============================================================================
 # パス設定 & 関数定義
 # ==============================================================================
-try:
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    base_dir = os.path.dirname(script_dir)
-except NameError:
-    script_dir = os.getcwd()
-    base_dir = os.path.dirname(script_dir)
+script_dir = os.path.dirname(os.path.abspath(__file__))
+base_dir = os.path.dirname(script_dir)
+
 
 akima_excel_path = os.path.join(
     base_dir,
@@ -505,7 +503,7 @@ if PERFORM_OPTUNA:
     print("="*70)
 
     # (以下、最適化後の学習処理へ続く...)
-    best_params = study.best_params
+    best_params: dict[str, Any] = study.best_params
     # ...
     LEARNING_RATE = best_params['lr']
     HIDDEN_LAYERS = [best_params[f'n_units_l{i}'] for i in range(best_params['n_layers'])]
