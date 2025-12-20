@@ -421,7 +421,7 @@ if PERFORM_OPTUNA:
     DB_FILENAME = "distributed_search_result.db"
     
     # 実験名（2台とも「完全に同じ名前」にしてください）
-    STUDY_NAME = "nn_hysteresis_distributed_study"
+    STUDY_NAME = "nn_hysteresis_(0.1 1.7 0.1)_(0.1 1.8 0.1))"
     # ==============================================================================
 
     # 共有フォルダが存在するか確認
