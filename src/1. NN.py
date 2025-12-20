@@ -485,7 +485,7 @@ if not settings_match and PERFORM_TRAINING:
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=GRAD_CLIP)
             optimizer.step()
-        if (epoch + 1) % 10 == 0 or epoch == 0:
+        if (epoch + 1) % 100 == 0 or epoch == 0:
             print(f'Epoch [{epoch+1}/{EPOCHS}], Loss: {loss.item():.6f}')
             
     print("✅ 学習が完了しました。")
