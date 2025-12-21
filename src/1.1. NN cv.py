@@ -486,9 +486,11 @@ if PERFORM_OPTUNA:
     print("最適化に要する時間を計算します", "[start_time=",start_time,"]")
     print(f"試行回数: {N_TRIALS}")
     print("="*70)
-
-    db_url = "sqlite:///search_result.db"
-    study_name = "nn_hysteresis_study_gaisou" 
+# db-urlをここから変更すること
+    # db_url = "sqlite:///search_result.db"
+    # study_name = "nn_hysteresis_study_gaisou" 
+    db_url = "sqlite:///Z:/Optuna_db/search_result_cv.db"
+    study_name = "nn_(0.1 1.7 0.1)_to_(0.1 1.8 0.1)_cv_study_Bm-Hb"
     
     # --- ★★★ 安全策: 実験名の確認と一時停止 ★★★ ---
     print(f"\n【実行前の確認】")
