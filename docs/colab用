@@ -1,0 +1,32 @@
+
+username = "Soma-Kawamoto"
+token = "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"  # 例: "ghp_xxxxxxxxxxxx..."
+repo_name = "NN_perf"
+
+# ---------------------------------------------------------
+# 正しい形式（username:token）でCloneします
+# ---------------------------------------------------------
+!git clone https://{username}:{token}@github.com/{username}/{repo_name}.git
+
+%cd /content/NN_perf
+!git checkout feature
+
+
+# 必要なライブラリのインストール
+!pip install xlsxwriter
+!pip install openpyxl
+!pip install optuna
+!pip install -r requirements.txt
+
+!python "/content/NN_perf/1.Training Data Folder/src/1.高橋先生からもらったデータのextracting(xlsx).py"
+!python "/content/NN_perf/1.Training Data Folder/src/2.Fourier Transform Correction.py"
+!python "/content/NN_perf/1.Training Data Folder/src/3.how_reduct.py"
+!python "/content/NN_perf/1.Training Data Folder/src/4.Ascending branch of the hysteresis loop.py"
+!python "/content/NN_perf/1.Training Data Folder/src/5.Downsampling.py"
+!python "/content/NN_perf/1.Training Data Folder/src/6.Reference data.py"
+!python "/content/NN_perf/1.Training Data Folder/src/8.Hc_Br.py"
+
+!python "/content/NN_perf/2.Normal Magnetization Curve Extraction Folder/src/1. Raw Normal Magnetization Curve.py"
+!python "/content/NN_perf/2.Normal Magnetization Curve Extraction Folder/src/2. Akima spline interpolation.py"
+
+!python "/content/NN_perf/src/2. NN_colab.py"
