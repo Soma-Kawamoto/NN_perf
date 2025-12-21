@@ -2,8 +2,9 @@
 # -*- coding: utf-8 -*-
 """
 【Google Colab版】全結合型ニューラルネットワーク (NN) 回帰スクリプト
+・ホールドアウト検証版 (v8改)
 ・TPUランタイム（44コアCPU）対応
-・Googleドライブ上のデータ/DBを使用
+・ローカルデータ (/content/NN_perf) を使用するため爆速
 """
 import os
 import numpy as np
@@ -21,30 +22,28 @@ from openpyxl.drawing.line import LineProperties
 import japanize_matplotlib
 from datetime import datetime
 import configparser
-from sklearn.model_selection import train_test_split, KFold
+from sklearn.model_selection import train_test_split
 import optuna
 from typing import Any, Dict, List, Tuple
 import time
+import shutil
 
 # Colabではフォントインストールが面倒な場合があるため、デフォルトフォントで回避
 plt.rcParams["font.size"] = 20
 
 # ==============================================================================
-# ★★★ Colab専用パス設定 (ここが最重要) ★★★
+# ★★★ Colab専用パス設定 ★★★
 # ==============================================================================
-# Googleドライブのマウントパス (NN_perfフォルダがマイドライブ直下にあると仮定)
+# ユーザー指定のパス (Colabのローカルディスク)
 PROJECT_ROOT = "/content/NN_perf"
 
-# 設定ファイルなどが相対パスで書かれているため、基準ディレクトリを定義
-# ローカルの構成に合わせて "1.Training Data Folder" の中の src にいるフリをさせます
-# ただし、ファイル読み込みは絶対パスで作るのが確実です。
-
+# 設定ファイルのパス
 config_path = os.path.join(PROJECT_ROOT, "config", "1. NN.ini")
 config = configparser.ConfigParser()
 
 if not os.path.exists(config_path):
     print(f"🔴 設定ファイルが見つかりません: {config_path}")
-    print("Googleドライブに 'NN_perf' フォルダが正しくアップロードされているか確認してください。")
+    print("フォルダの場所 (/content/NN_perf) が正しいか確認してください。")
     exit()
 
 config.read(config_path, encoding='utf-8')
@@ -74,7 +73,7 @@ lr_min = config.getfloat('optuna_search_space', 'lr_min', fallback=1e-5)
 lr_max = config.getfloat('optuna_search_space', 'lr_max', fallback=1e-2)
 LR_RANGE = [lr_min, lr_max]
 
-# ★★★ 過去の結果Excelのパス (Googleドライブ) ★★★
+# ★★★ 過去の結果Excelのパス ★★★
 LOAD_PARAMS_FROM_EXCEL = False
 PARAMS_EXCEL_PATH = os.path.join(PROJECT_ROOT, "3.Answer", "NN_regression_results", "50A470", "20", "summary.xlsx") 
 
@@ -92,7 +91,7 @@ Bmreg_max = config.getfloat('regression', 'Bmreg_max')
 step = config.getfloat('regression', 'step')
 
 # ==============================================================================
-# パス定義 (Googleドライブ基準)
+# パス定義
 # ==============================================================================
 base_dir = os.path.join(PROJECT_ROOT, "1.Training Data Folder")
 
@@ -370,6 +369,7 @@ def objective(trial):
     optimizer = optim.Adam(model.parameters(), lr=lr)
     criterion = RMSELoss() if LossFunc == 'RMSE' else nn.MSELoss()
 
+    # ホールドアウト分割
     X_t, X_v, Y_t, Y_v = train_test_split(X_train_scaled, Y_train_scaled, test_size=0.2, random_state=42)
     
     # データをTensor化してデバイスへ
@@ -381,7 +381,7 @@ def objective(trial):
     train_dataset = TensorDataset(X_train_tensor, Y_train_tensor)
     
     # ★重要: 44コアのCPUを活用する設定 (num_workers)
-    # デバイスがCPUの場合はpin_memory=Falseの方が効率的な場合もあるためFalseにします
+    # ローカルディスク上なのでpin_memory=Falseでも十分速いですが、Trueでも問題ありません
     train_loader = DataLoader(
         dataset=train_dataset, 
         batch_size=batch_size, 
@@ -410,13 +410,13 @@ def objective(trial):
 
 if PERFORM_OPTUNA:
     print("\n" + "="*70)
-    print("Optunaによるハイパーパラメータ探索を開始します (Google Drive)...")
+    print("Optunaによるハイパーパラメータ探索を開始します (Local Disk)...")
     start_time = time.time()
     print("最適化に要する時間を計算します", "[start_time=",start_time,"]")
     print(f"試行回数: {N_TRIALS}")
     print("="*70)
 
-    # ★★★ Colab用のGoogleドライブ上DB設定 ★★★
+    # ★★★ Colab用のDB設定 (ローカルディスク) ★★★
     db_path = os.path.join(PROJECT_ROOT, "distributed_search_result.db")
     db_url = f"sqlite:///{db_path}"
 
