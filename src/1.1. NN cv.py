@@ -491,7 +491,7 @@ if PERFORM_OPTUNA:
     db_url = "mysql+pymysql://optuna:Kysym-18459@172.20.145.93/optuna_db"
     
     study_name = (
-        f"nn_({Bmtrain_min:.1f},{Bmtrain_max:.1f},{train_step:.1f})"
+        f"nn_({Bmtrain_min:.2f},{Bmtrain_max:.2f},{train_step:.2f})"
         f"_to_({Bmreg_min:.2f},{Bmreg_max:.2f},{step:.2f})"
         f"_Akima-{USE_AKIMA_DATA}"
     )
