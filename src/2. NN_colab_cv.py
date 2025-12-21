@@ -420,7 +420,12 @@ if PERFORM_OPTUNA:
 
     print(f"📂 データベース保存先: {db_path}") 
     
-    study_name = "nn_hysteresis_study_gaisou"
+    study_name = (
+        f"nn_cv_({Bmtrain_min:.2f},{Bmtrain_max:.2f},{train_step:.2f})"
+        f"_to_({Bmreg_min:.2f},{Bmreg_max:.2f},{step:.2f})"
+        f"_Akima-{USE_AKIMA_DATA}"
+    )
+
     
     print(f"\n【実行前の確認】")
     print(f"  📂 データベース: {db_url}")
