@@ -7,3 +7,6 @@ matplotlib
 japanize-matplotlib
 pytest
 pytest-mock
+optuna
+openpyxl
+xlrd
