@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-全結合型ニューラルネットワーク (NN) による B-H ヒステリシス回帰スクリプト
-【v9: CV実装(Akima学習固定) + GPU対応 + 型ヒント追加 + Linux/WSL対応版】
+【Google Colab版】全結合型ニューラルネットワーク (NN) 回帰スクリプト
+・TPUランタイム（44コアCPU）対応
+・Googleドライブ上のデータ/DBを使用
 """
 import os
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import torch
-import torch.nn as nn # type: ignore
+import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import TensorDataset, DataLoader
 from sklearn.preprocessing import StandardScaler
@@ -18,7 +19,6 @@ from openpyxl.chart import ScatterChart, Reference, Series
 from openpyxl.chart.shapes import GraphicalProperties
 from openpyxl.drawing.line import LineProperties
 import japanize_matplotlib
-from openpyxl.drawing.image import Image as OpenpyxlImage
 from datetime import datetime
 import configparser
 from sklearn.model_selection import train_test_split, KFold
@@ -26,20 +26,27 @@ import optuna
 from typing import Any, Dict, List, Tuple
 import time
 
-# フォント設定（Linux環境に合わせてTakaoPGothicなどを指定する場合もありますが、一旦Times New Romanのままにします）
-plt.rcParams["font.family"] = "Times New Roman"
+# Colabではフォントインストールが面倒な場合があるため、デフォルトフォントで回避
 plt.rcParams["font.size"] = 20
 
 # ==============================================================================
-# --- 設定ファイルの読み込み ---
+# ★★★ Colab専用パス設定 (ここが最重要) ★★★
 # ==============================================================================
-try:
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-except NameError:
-    script_dir = os.getcwd()
+# Googleドライブのマウントパス (NN_perfフォルダがマイドライブ直下にあると仮定)
+PROJECT_ROOT = "/content/drive/MyDrive/NN_perf"
 
-config_path = os.path.join(script_dir, "..", "config", "1. NN.ini")
+# 設定ファイルなどが相対パスで書かれているため、基準ディレクトリを定義
+# ローカルの構成に合わせて "1.Training Data Folder" の中の src にいるフリをさせます
+# ただし、ファイル読み込みは絶対パスで作るのが確実です。
+
+config_path = os.path.join(PROJECT_ROOT, "config", "1. NN.ini")
 config = configparser.ConfigParser()
+
+if not os.path.exists(config_path):
+    print(f"🔴 設定ファイルが見つかりません: {config_path}")
+    print("Googleドライブに 'NN_perf' フォルダが正しくアップロードされているか確認してください。")
+    exit()
+
 config.read(config_path, encoding='utf-8')
 
 # [settings]
@@ -48,7 +55,7 @@ mat_name = config.get('settings', 'mat_name')
 target_freq = config.getint('settings', 'target_freq')
 PERFORM_OPTUNA = config.getboolean('settings', 'PERFORM_OPTUNA', fallback=False)
 N_TRIALS = config.getint('settings', 'N_TRIALS', fallback=50)
-USE_GPU_SETTING = config.getboolean('settings', 'USE_GPU', fallback=True) # GPU設定
+USE_GPU_SETTING = config.getboolean('settings', 'USE_GPU', fallback=True)
 
 # [architecture]
 hidden_layers_str = config.get('architecture', 'HIDDEN_LAYERS')
@@ -67,11 +74,9 @@ lr_min = config.getfloat('optuna_search_space', 'lr_min', fallback=1e-5)
 lr_max = config.getfloat('optuna_search_space', 'lr_max', fallback=1e-2)
 LR_RANGE = [lr_min, lr_max]
 
-# ★★★ 追加設定: 過去の結果Excelからハイパーパラメータをロードする場合 ★★★
-LOAD_PARAMS_FROM_EXCEL = False  # Trueにすると、下のパスのExcelからパラメータを読み込みます
-
-# 【修正】Windowsパス(C:\...) を Linuxパス(/mnt/c/...) に変更
-PARAMS_EXCEL_PATH = "/mnt/c/Users/RM-2503-1/Desktop/M1/3_研究/NN_perf/3.Answer/NN_regression_results/50A470/20/20251103_142945_RMSE_summary_50A470_20hz_NN.xlsx"
+# ★★★ 過去の結果Excelのパス (Googleドライブ) ★★★
+LOAD_PARAMS_FROM_EXCEL = False
+PARAMS_EXCEL_PATH = os.path.join(PROJECT_ROOT, "3.Answer", "NN_regression_results", "50A470", "20", "summary.xlsx") 
 
 # [data]
 Bmtrain_min = config.getfloat('data', 'Bmtrain_min')
@@ -79,7 +84,6 @@ Bmtrain_max = config.getfloat('data', 'Bmtrain_max')
 train_step = config.getfloat('data', 'train_step')
 train_amp = list(np.round(np.arange(Bmtrain_min, Bmtrain_max + 1e-8, train_step), 1))
 
-# ★★★ Akimaデータを学習データとして使用するかどうか (True/False) ★★★
 USE_AKIMA_DATA = config.getboolean('data', 'USE_AKIMA_DATA', fallback=True)
 
 # [regression]
@@ -88,24 +92,19 @@ Bmreg_max = config.getfloat('regression', 'Bmreg_max')
 step = config.getfloat('regression', 'step')
 
 # ==============================================================================
-# パス設定 & 関数定義
+# パス定義 (Googleドライブ基準)
 # ==============================================================================
-try:
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    base_dir = os.path.dirname(script_dir)
-except NameError:
-    script_dir = os.getcwd()
-    base_dir = os.path.dirname(script_dir)
+base_dir = os.path.join(PROJECT_ROOT, "1.Training Data Folder")
 
 akima_excel_path = os.path.join(
-    base_dir,
+    PROJECT_ROOT,
     "2.Normal Magnetization Curve Extraction Folder", "assets", "2.Akima spline interpolation",
     f"Bm-Hb Curve_akima_{mat_name}_50hz.xlsx"
 )
-input_base = os.path.join(base_dir, "1.Training Data Folder", "assets", "6.Downsampling")
-output_base = os.path.join(base_dir, "3.Answer", "NN_regression_results")
-model_dir = os.path.join(base_dir, "3.Answer", "NN_models")
-truth_data_base = os.path.join(base_dir, "1.Training Data Folder", "assets", "7.reference data")
+input_base = os.path.join(PROJECT_ROOT, "1.Training Data Folder", "assets", "6.Downsampling")
+output_base = os.path.join(PROJECT_ROOT, "3.Answer", "NN_regression_results")
+model_dir = os.path.join(PROJECT_ROOT, "3.Answer", "NN_models")
+truth_data_base = os.path.join(PROJECT_ROOT, "1.Training Data Folder", "assets", "7.reference data")
 
 plot_output_dir = os.path.join(output_base, mat_name, str(target_freq), "plots")
 os.makedirs(model_dir, exist_ok=True)
@@ -118,23 +117,17 @@ scaler_Y_path = os.path.join(model_dir, f"scaler_Y_{mat_name}_{target_freq}hz.pk
 truth_data_path = os.path.join(truth_data_base, f"summary_{mat_name}_{step}.xlsx")
 
 # ==============================================================================
-# デバイスの決定ロジック
+# デバイス決定 (TPUランタイムの場合はCPUになります)
 # ==============================================================================
 def get_device(use_gpu_setting: bool) -> torch.device:
-    """設定と環境に基づいてデバイスを決定する"""
     if use_gpu_setting and torch.cuda.is_available():
-        current_device = torch.device("cuda")
         print(f"🚀 GPU (CUDA) を使用して計算を行います: {torch.cuda.get_device_name(0)}")
+        return torch.device("cuda")
     else:
-        if use_gpu_setting and not torch.cuda.is_available():
-            print("⚠️ GPU使用が設定されていますが、利用可能なGPUが見つかりません。CPUを使用します。")
-        current_device = torch.device("cpu")
-        print("💻 CPU を使用して計算を行います")
-    return current_device
+        print("💻 CPU (TPUランタイムの強力なCPU) を使用して計算を行います")
+        return torch.device("cpu")
 
-# デバイスを決定（グローバル変数として保持）
 device = get_device(USE_GPU_SETTING)
-
 
 class RMSELoss(nn.Module):
     def __init__(self, eps=1e-6):
@@ -144,14 +137,14 @@ class RMSELoss(nn.Module):
     def forward(self, yhat, y):
         return torch.sqrt(self.mse(yhat, y) + self.eps)
 
-def get_activation_function(name: str) -> nn.Module:
+def get_activation_function(name):
     if name.lower() == 'relu': return nn.ReLU()
     elif name.lower() == 'tanh': return nn.Tanh()
     elif name.lower() == 'sigmoid': return nn.Sigmoid()
     else: raise ValueError(f"未対応の活性化関数です: {name}")
 
 class FullyConnectedNN(nn.Module):
-    def __init__(self, input_size: int, output_size: int, hidden_layers: List[int], activation_func: nn.Module = nn.ReLU()):
+    def __init__(self, input_size, output_size, hidden_layers, activation_func=nn.ReLU()):
         super(FullyConnectedNN, self).__init__()
         layers = []
         in_size = input_size
@@ -186,7 +179,7 @@ def create_info_df(amp_value=None):
         info_data["値"].append(f"{amp_value:.2f}")
     return pd.DataFrame(info_data)
 
-def load_hyperparams_from_excel(excel_path: str) -> Tuple[List[int], str, float, int, int, float]:
+def load_hyperparams_from_excel(excel_path):
     print(f"\n📂 Excelファイルからハイパーパラメータを読み込んでいます: {excel_path}")
     try:
         df_info = pd.read_excel(excel_path, sheet_name='Info', engine='openpyxl')
@@ -233,7 +226,6 @@ def add_comparison_chart_to_sheet(ws, df_len):
 # --- データ読み込みと前処理 ---
 # ==============================================================================
 
-# --- データ読み込み ---
 print("RMSE比較のため、正解データを読み込んでいます...")
 try:
     df_truth_all = pd.read_excel(truth_data_path, sheet_name=f"{target_freq}Hz", header=1)
@@ -261,11 +253,8 @@ for amp in train_amp:
     B, H = df['B'].values, df['H'].values
     for b_val, h_val in zip(B, H): X_list.append([amp, b_val]); Y_list.append([h_val])
 
-# ★★★ 通常データの数を記録（Akimaとの区別用） ★★★
 NUM_NORMAL_SAMPLES = len(X_list)
-
-# ★★★ Akimaデータの読み込み処理（USE_AKIMA_DATAフラグで分岐） ★★★
-Hb_vals, Bm_vals = np.array([]), np.array([]) # プロット用に初期化
+Hb_vals, Bm_vals = np.array([]), np.array([]) 
 
 if USE_AKIMA_DATA:
     print(f"\nAkima補間データを読み込んでいます...")
@@ -278,13 +267,11 @@ if USE_AKIMA_DATA:
         if initial_rows > final_rows:
             print(f"  - 警告: Akimaデータから{initial_rows - final_rows}個の無効な行（NaNまたはinf）を削除しました.")
         
-        # Bmregの値に近い点を許容誤差でフィルタリング
         target_regression_amps = np.round(np.arange(Bmreg_min, Bmreg_max + 1e-8, step), 2)
         print(f"  - 対象の回帰振幅: {target_regression_amps}")
         mask = np.any([np.isclose(df_akima_full['amp_Bm'], amp, rtol=1e-5, atol=1e-2) for amp in target_regression_amps], axis=0)
         df_akima_filtered = df_akima_full[mask].copy()
 
-        # 0.05Tの強制追加ロジック（対象範囲に含まれる場合のみ）
         if 0.05 in target_regression_amps:
             has_005 = np.any(np.isclose(df_akima_filtered['amp_Bm'], 0.05, rtol=1e-5, atol=1e-2))
             if not has_005:
@@ -334,32 +321,14 @@ plt.tight_layout()
 plot_save_path = os.path.join(plot_output_dir, f"training_data_distribution.png")
 plt.savefig(plot_save_path)
 print(f"✅ 学習データのプロットをファイルに保存しました: {plot_save_path}")
-# print("▶️ 学習データのプロットを表示します。このウィンドウを閉じると、モデルの学習が始まります...")
-# plt.show() # WSL環境でGUIが出ない場合はコメントアウト推奨
-
-# --- 学習データ点数プロット ---
-print("\n学習データ点数をプロットしています...")
-data_points_plot_path = os.path.join(plot_output_dir, "training_data_points_vs_amp.png")
-if data_points_per_amp:
-    amps = list(data_points_per_amp.keys())
-    points = list(data_points_per_amp.values())
-    plt.figure(figsize=(10, 6))
-    plt.bar(amps, points, width=train_step*0.8, align='center', color='mediumseagreen', edgecolor='black')
-    plt.title(f'学習データ点数 vs 磁束密度振幅 - {mat_name} {target_freq}Hz')
-    plt.xlabel('磁束密度振幅 Bm [T]')
-    plt.ylabel('学習データ点数')
-    plt.xticks(amps, rotation=45)
-    plt.grid(True, axis='y', linestyle='--', alpha=0.7)
-    plt.tight_layout()
-    plt.savefig(data_points_plot_path)
-    print(f"✅ 学習データ点数のプロットをファイルに保存しました: {data_points_plot_path}")
-    # plt.show()
+# plt.show() # Colabでは表示しなくても保存されていればOK
 
 # --- NNモデル構築と学習 ---
 scaler_X = StandardScaler()
 scaler_Y = StandardScaler()
 X_train_scaled = scaler_X.fit_transform(X_train)
 Y_train_scaled = scaler_Y.fit_transform(Y_train)
+
 should_load_model = not PERFORM_TRAINING
 settings_match = False
 if should_load_model:
@@ -367,7 +336,6 @@ if should_load_model:
         saved_info_df = pd.read_excel(model_info_path, sheet_name='Info')
         saved_settings = pd.Series(saved_info_df.値.values, index=saved_info_df.項目).to_dict()
         
-        # Akimaの使用有無も設定一致確認に含める
         saved_use_akima = str(saved_settings.get('Akimaデータ使用', 'True')) 
         current_use_akima = str(USE_AKIMA_DATA)
         
@@ -380,7 +348,7 @@ if should_load_model:
             int(saved_settings.get('NNバッチサイズ')) == int(BATCH_SIZE) and
             float(saved_settings.get('NN勾配クリップ値', 1.0)) == float(GRAD_CLIP) and
             str(saved_settings.get('学習データ(振幅 T)')) == str(train_amp) and
-            saved_use_akima == current_use_akima and # ★ Akima設定の一致確認
+            saved_use_akima == current_use_akima and 
             os.path.exists(model_weights_path) and os.path.exists(scaler_X_path) and os.path.exists(scaler_Y_path)):
             settings_match = True
     except Exception:
@@ -388,135 +356,90 @@ if should_load_model:
 print("学習時間計算中")
 
 # ==============================================================================
-# --- Optunaによるハイパーパラメータ最適化 (CV版 + GPU + Akima固定) ---
+# --- Optunaによるハイパーパラメータ最適化 ---
 # ==============================================================================
-def objective(trial: optuna.trial.Trial) -> float:
-    """Optunaの目的関数 (Akima固定 5-Fold CV版)"""
-    # --- 1. ハイパーパラメータの提案 ---
+def objective(trial):
     lr = trial.suggest_float("lr", LR_RANGE[0], LR_RANGE[1], log=True)
     n_layers = trial.suggest_int("n_layers", 1, 4)
     hidden_layers = [trial.suggest_int(f"n_units_l{i}", 32, 256) for i in range(n_layers)]
     activation_str = trial.suggest_categorical("activation", ["relu", "tanh"])
     batch_size = trial.suggest_categorical("batch_size", [32, 64, 128, 256])
     
-    # 共通の設定
     activation_func = get_activation_function(activation_str)
+    model = FullyConnectedNN(input_size=2, output_size=1, hidden_layers=hidden_layers, activation_func=activation_func).to(device)
+    optimizer = optim.Adam(model.parameters(), lr=lr)
     criterion = RMSELoss() if LossFunc == 'RMSE' else nn.MSELoss()
+
+    X_t, X_v, Y_t, Y_v = train_test_split(X_train_scaled, Y_train_scaled, test_size=0.2, random_state=42)
     
-    # --- 2. データの分離 (通常データとAkimaデータ) ---
-    # グローバル変数の X_train_scaled, NUM_NORMAL_SAMPLES を使用
-    X_normal = X_train_scaled[:NUM_NORMAL_SAMPLES]
-    Y_normal = Y_train_scaled[:NUM_NORMAL_SAMPLES]
+    # データをTensor化してデバイスへ
+    X_train_tensor = torch.FloatTensor(X_t).to(device)
+    Y_train_tensor = torch.FloatTensor(Y_t).to(device)
+    X_val_tensor = torch.FloatTensor(X_v).to(device)
+    Y_val_tensor = torch.FloatTensor(Y_v).to(device)
     
-    X_akima = X_train_scaled[NUM_NORMAL_SAMPLES:]
-    Y_akima = Y_train_scaled[NUM_NORMAL_SAMPLES:]
-
-    # --- 3. K-Fold CV の準備 ---
-    K_SPLITS = 5
-    kf = KFold(n_splits=K_SPLITS, shuffle=True, random_state=42)
+    train_dataset = TensorDataset(X_train_tensor, Y_train_tensor)
     
-    fold_scores = [] 
+    # ★重要: 44コアのCPUを活用する設定 (num_workers)
+    # デバイスがCPUの場合はpin_memory=Falseの方が効率的な場合もあるためFalseにします
+    train_loader = DataLoader(
+        dataset=train_dataset, 
+        batch_size=batch_size, 
+        shuffle=True,
+        num_workers=16, # 44コアあるので16くらいまで上げてもOK
+        persistent_workers=True
+    )
 
-    # --- 4. Foldごとのループ (分割は「通常データ」のみで行う) ---
-    for fold, (train_idx, val_idx) in enumerate(kf.split(X_normal)):
-        
-        # 通常データの分割
-        X_t_norm, X_v_norm = X_normal[train_idx], X_normal[val_idx]
-        Y_t_norm, Y_v_norm = Y_normal[train_idx], Y_normal[val_idx]
+    for epoch in range(EPOCHS):
+        model.train()
+        for inputs, targets in train_loader:
+            optimizer.zero_grad()
+            outputs = model(inputs)
+            loss = criterion(outputs, targets)
+            if torch.isnan(loss): return float('inf')
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=GRAD_CLIP)
+            optimizer.step()
 
-        # ★重要: 学習データには Akimaデータを結合する (検証データには含めない)
-        X_t = np.concatenate([X_t_norm, X_akima], axis=0)
-        Y_t = np.concatenate([Y_t_norm, Y_akima], axis=0)
-        
-        # 検証データは通常データの一部のみ
-        X_v = X_v_norm
-        Y_v = Y_v_norm
+    model.eval()
+    with torch.no_grad():
+        val_outputs = model(X_val_tensor)
+        val_loss = criterion(val_outputs, Y_val_tensor)
 
-        # Tensor化
-        X_train_tensor = torch.FloatTensor(X_t)
-        Y_train_tensor = torch.FloatTensor(Y_t)
-        X_val_tensor = torch.FloatTensor(X_v)
-        Y_val_tensor = torch.FloatTensor(Y_v)
+    return val_loss.item()
 
-        # DataLoader作成
-        train_dataset = TensorDataset(X_train_tensor, Y_train_tensor)
-        train_loader = DataLoader(dataset=train_dataset, batch_size=batch_size, shuffle=True)
-
-        # モデルとオプティマイザの初期化 (GPU転送)
-        model = FullyConnectedNN(
-            input_size=2, output_size=1, hidden_layers=hidden_layers, activation_func=activation_func
-        ).to(device)
-        
-        optimizer = optim.Adam(model.parameters(), lr=lr)
-
-        # --- 学習ループ ---
-        for epoch in range(EPOCHS):
-            model.train()
-            for inputs, targets in train_loader:
-                # データをGPUへ
-                inputs, targets = inputs.to(device), targets.to(device)
-                
-                optimizer.zero_grad()
-                outputs = model(inputs)
-                loss = criterion(outputs, targets)
-                
-                if torch.isnan(loss):
-                    return float('inf')
-                
-                loss.backward()
-                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=GRAD_CLIP)
-                optimizer.step()
-
-        # --- 検証 ---
-        model.eval()
-        # 検証データもGPUへ
-        X_val_gpu = X_val_tensor.to(device)
-        Y_val_gpu = Y_val_tensor.to(device)
-        
-        with torch.no_grad():
-            val_outputs = model(X_val_gpu)
-            val_loss = criterion(val_outputs, Y_val_gpu)
-            fold_scores.append(val_loss.item())
-    
-    mean_rmse = np.mean(fold_scores)
-    return mean_rmse
-
-# --- Optuna最適化の実行 ---
-# --- Optuna最適化の実行 (MySQL版 -> SQLite版に修正) ---
 if PERFORM_OPTUNA:
     print("\n" + "="*70)
-    print("Optunaによるハイパーパラメータ探索を開始します (SQLite on Z-Drive)...")
+    print("Optunaによるハイパーパラメータ探索を開始します (Google Drive)...")
     start_time = time.time()
-    
-    # === ★★★ 【修正】ZドライブのSQLiteを使用する設定 ★★★ ===
-    # 元のMySQL設定はコメントアウトしました
-    # db_url = "mysql+pymysql://optuna:Kysym-18459@172.20.145.93/optuna_db"
-    
-    # Zドライブのパスを指定 (WindowsのZ:\distributed_search_result.db)
-    db_path = "/mnt/z/distributed_search_result.db"
+    print("最適化に要する時間を計算します", "[start_time=",start_time,"]")
+    print(f"試行回数: {N_TRIALS}")
+    print("="*70)
+
+    # ★★★ Colab用のGoogleドライブ上DB設定 ★★★
+    db_path = os.path.join(PROJECT_ROOT, "distributed_search_result.db")
     db_url = f"sqlite:///{db_path}"
 
+    print(f"📂 データベース保存先: {db_path}") 
     
-    study_name = (
-        f"nn_cv_({Bmtrain_min:.2f},{Bmtrain_max:.2f},{train_step:.2f})"
-        f"_to_({Bmreg_min:.2f},{Bmreg_max:.2f},{step:.2f})"
-        f"_Akima-{USE_AKIMA_DATA}"
-    )
+    study_name = "nn_hysteresis_study_gaisou"
     
     print(f"\n【実行前の確認】")
-    print(f"  📂 データベース: SQLite (Zドライブ共有)")
-    print(f"  🔗 接続URL: {db_url}")
-    print(f"  🏷️  実験名: {study_name}")
+    print(f"  📂 データベース: {db_url}")
+    print(f"  🏷️  実験名 (Study Name): {study_name}")
     print("-" * 50)
     
     try:
         input(">> 設定に問題なければ [Enter] キーを押して開始してください... (中止は Ctrl+C)")
     except KeyboardInterrupt:
         print("\n\n⛔ 中断されました。"); exit()
-        
-    # SQLiteでも load_if_exists=True でOK
-    study = optuna.create_study(direction="minimize", storage=db_url, study_name=study_name, load_if_exists=True)
-    
+
+    study = optuna.create_study(
+        direction="minimize", 
+        storage=db_url, 
+        study_name=study_name, 
+        load_if_exists=True
+    )
     study.optimize(objective, n_trials=N_TRIALS)
 
     print("\n" + "="*70)
@@ -525,10 +448,10 @@ if PERFORM_OPTUNA:
     print("最適化に要した時間は", end_time - start_time, "秒です")
     print(f"最良スコア (検証RMSE): {study.best_value}")
     print("最適なハイパーパラメータ:")
-    best_params: dict[str, Any] = study.best_params # 型ヒント追加
-    print(best_params)
+    print(study.best_params)
     print("="*70)
 
+    best_params: dict[str, Any] = study.best_params
     LEARNING_RATE = best_params['lr']
     HIDDEN_LAYERS = [best_params[f'n_units_l{i}'] for i in range(best_params['n_layers'])]
     activation_func_str = best_params['activation']
@@ -537,7 +460,7 @@ if PERFORM_OPTUNA:
     settings_match = False 
 
 # ==============================================================================
-# --- (追加) Excelからのパラメータ読み込みと適用 ---
+# --- 学習 ---
 # ==============================================================================
 if not PERFORM_OPTUNA and LOAD_PARAMS_FROM_EXCEL and os.path.exists(PARAMS_EXCEL_PATH):
     loaded_hidden, loaded_act, loaded_lr, loaded_epochs, loaded_batch, loaded_clip = load_hyperparams_from_excel(PARAMS_EXCEL_PATH)
@@ -554,30 +477,21 @@ if not PERFORM_OPTUNA and LOAD_PARAMS_FROM_EXCEL and os.path.exists(PARAMS_EXCEL
     PERFORM_TRAINING = True 
     settings_match = False 
 
-# ==============================================================================
-# --- モデル学習と結果出力 (GPU対応) ---
-# ==============================================================================
-
 if not settings_match and PERFORM_TRAINING:
     print("\nモデルの学習を開始します...")
     ACTIVATION_FUNC = get_activation_function(activation_func_str)
+    model = FullyConnectedNN(input_size=2, output_size=1, hidden_layers=HIDDEN_LAYERS, activation_func=ACTIVATION_FUNC).to(device)
     
-    # モデル構築とGPU転送
-    model = FullyConnectedNN(
-        input_size=2, output_size=1, hidden_layers=HIDDEN_LAYERS, activation_func=ACTIVATION_FUNC
-    ).to(device)
-    
-    X_train_tensor = torch.FloatTensor(X_train_scaled)
-    Y_train_tensor = torch.FloatTensor(Y_train_scaled)
+    X_train_tensor = torch.FloatTensor(X_train_scaled).to(device)
+    Y_train_tensor = torch.FloatTensor(Y_train_scaled).to(device)
     train_dataset = TensorDataset(X_train_tensor, Y_train_tensor)
-    # num_workers=0 だと1人で作業、数値を上げるとチームで作業します。
-    # 44コアあるので、贅沢に「8〜16」くらい設定しても余裕です！
+    
     train_loader = DataLoader(
-    dataset=train_dataset,
-    batch_size=BATCH_SIZE,
-    shuffle=True,
-    num_workers=8,  # ← ここを追加！ (推奨: 4, 8, 16 あたりで試す)
-    pin_memory=True # ← これもTrueにするとGPUへの転送が速くなります
+        dataset=train_dataset, 
+        batch_size=BATCH_SIZE, 
+        shuffle=True,
+        num_workers=16, 
+        persistent_workers=True
     )
     
     criterion = RMSELoss() if LossFunc == 'RMSE' else nn.MSELoss()
@@ -586,25 +500,18 @@ if not settings_match and PERFORM_TRAINING:
     for epoch in range(EPOCHS):
         model.train()
         for inputs, targets in train_loader:
-            # データをGPUへ
-            inputs, targets = inputs.to(device), targets.to(device)
-            
             optimizer.zero_grad()
             outputs = model(inputs)
             loss = criterion(outputs, targets)
-            
             if torch.isnan(loss):
                 print(f"🔴 エラー: Epoch {epoch+1}で損失がnanになりました。学習を停止します。"); exit()
-            
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=GRAD_CLIP)
             optimizer.step()
-            
         if (epoch + 1) % 100 == 0 or epoch == 0:
             print(f'Epoch [{epoch+1}/{EPOCHS}], Loss: {loss.item():.6f}')
             
     print("✅ 学習が完了しました。")
-    # 保存時はCPUに戻して保存する（汎用性のため）
     torch.save(model.to('cpu').state_dict(), model_weights_path)
     
     with open(scaler_X_path, 'wb') as f: pickle.dump(scaler_X, f)
@@ -618,14 +525,13 @@ else:
     ACTIVATION_FUNC = get_activation_function(activation_func_str)
     model = FullyConnectedNN(input_size=2, output_size=1, hidden_layers=HIDDEN_LAYERS, activation_func=ACTIVATION_FUNC)
     model.load_state_dict(torch.load(model_weights_path))
-    # 推論のためにデバイスへ送る
     model.to(device)
     
     with open(scaler_X_path, 'rb') as f: scaler_X = pickle.load(f)
     with open(scaler_Y_path, 'rb') as f: scaler_Y = pickle.load(f)
     print("✅ モデルとスケーラーの読み込みが完了しました.")
 
-# --- 結果プロット、Excel出力、およびRMSE計算 ---
+# --- 結果プロット、Excel出力 ---
 print("\n回帰結果を計算し、出力しています...")
 plt.figure(figsize=(10, 8))
 plt.title(f'NN Regression vs Reference - {mat_name} {target_freq}Hz')
@@ -652,21 +558,15 @@ with torch.no_grad():
         Breg = np.linspace(-amp, amp, num_points)
         X_pred = np.array([[amp, b] for b in Breg])
         X_pred_scaled = scaler_X.transform(X_pred)
-        X_pred_tensor = torch.FloatTensor(X_pred_scaled)
+        X_pred_tensor = torch.FloatTensor(X_pred_scaled).to(device) # 推論もデバイスで
         
-        # GPUで推論
-        X_pred_gpu = X_pred_tensor.to(device)
-        Hpred_scaled = model(X_pred_gpu)
-        
-        # 結果をCPUに戻してNumpy化
+        Hpred_scaled = model(X_pred_tensor)
         Hpred_means = scaler_Y.inverse_transform(Hpred_scaled.cpu().numpy())
         Hpred = Hpred_means.flatten()
-        has_ref_data = False
         
         if i < len(truth_data_blocks):
             df_truth_loop = truth_data_blocks[i]
             if 'B' in df_truth_loop.columns and 'H_descending' in df_truth_loop.columns and np.allclose(Breg, df_truth_loop['B'].values, rtol=1e-5, atol=1e-2):
-                has_ref_data = True
                 h_true_desc = df_truth_loop['H_descending'].values
                 b_true = df_truth_loop['B'].values
                 Hb_pred = Hpred[-1]
@@ -678,15 +578,12 @@ with torch.no_grad():
                 label_ref = f'Ref {amp:.2f}T' if amp in [pred_amps.min(), 1.0, pred_amps.max()] else None
                 plt.plot(h_true_desc, b_true, marker='.', color='gray', linestyle='none', markersize=5, zorder=1, label=label_ref)
                 
-                df_comp = pd.DataFrame({
-                    'H_pred [A/m]': Hpred, 'B_reg [T]': Breg,
-                    'H_ref [A/m]': h_true_desc, 'B_ref [T]': b_true
-                })
+                df_comp = pd.DataFrame({'H_pred [A/m]': Hpred, 'B_reg [T]': Breg, 'H_ref [A/m]': h_true_desc, 'B_ref [T]': b_true})
                 comparison_sheets_data.append({'amp': amp, 'df': df_comp})
             else:
-                print(f"  Bm = {amp:.2f}T, 警告: 正解データとB軸の点が一致しないためRMSE計算と参照プロットをスキップします。")
+                print(f"  Bm = {amp:.2f}T, 警告: 正解データ不一致でスキップ")
         else:
-             print(f"  Bm = {amp:.2f}T, 警告: 対応する正解データブロックが見つかりません。")
+             print(f"  Bm = {amp:.2f}T, 警告: 正解データなし")
 
         if amp in train_amp_set:
             plt.plot(Hpred, Breg, color='blue', linestyle='-', zorder=2, alpha=0.6) 
@@ -694,18 +591,14 @@ with torch.no_grad():
             plt.plot(Hpred, Breg, color='red', linestyle='-', zorder=2) 
 
 plt.xlabel(r'$\it{H}$ [A/m]'); plt.ylabel(r'$\it{B}$ [T]'); 
-plt.grid(True)
-plt.legend()
+plt.grid(True); plt.legend()
 plot_save_path_results = os.path.join(plot_output_dir, f"regression_results.png")
 plt.savefig(plot_save_path_results)
 print(f"✅ 回帰結果のプロットをファイルに保存しました: {plot_save_path_results}")
-# plt.show() # GUI用
 
 # --- Excelへの書き込み ---
 if rmse_results:
-    print("\n" + "="*70)
-    print("RMSE 計算結果サマリー")
-    print("="*70)
+    print("\n" + "="*70 + "\nRMSE 計算結果サマリー\n" + "="*70)
     df_rmse = pd.DataFrame(rmse_results)
     print(df_rmse.to_string(index=False))
     
@@ -731,21 +624,16 @@ if rmse_results:
         with pd.ExcelWriter(rmse_out_path, engine='openpyxl') as writer:
             info_df = create_info_df()
             info_df.to_excel(writer, sheet_name='Info', index=False)
-            
             df_rmse.to_excel(writer, sheet_name='RMSE_Summary', index=False)
-            
             for item in comparison_sheets_data:
                 amp, df_data = item['amp'], item['df']
                 sheet_name = f"{amp:.2f}T"
                 df_data.to_excel(writer, sheet_name=sheet_name, index=False)
                 ws = writer.sheets[sheet_name]
                 add_comparison_chart_to_sheet(ws, len(df_data))
-                
         print(f"\n✅ 結果を保存しました.")
-    except PermissionError:
-        print(f"\n🔴 保存エラー: ファイルへのアクセスが拒否されました。'{os.path.basename(rmse_out_path)}'が開かれていないか確認してください。")
     except Exception as e:
-        print(f"🔴 Excelファイルへの書き込み中に予期せぬエラーが発生しました: {e.__class__.__name__}: {e}")
+        print(f"🔴 保存エラー: {e}")
 else:
     print("\n⚠️ RMSE結果が計算されませんでした。Excelへの出力をスキップします。")
 
