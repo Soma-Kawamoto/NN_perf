@@ -490,8 +490,14 @@ if PERFORM_OPTUNA:
     # db_url = "sqlite:///search_result.db"
     # study_name = "nn_hysteresis_study_gaisou" 
     db_url = "sqlite:///Z:/Optuna_db/search_result_cv.db"
-    study_name = "nn_(0.1 1.7 0.1)_to_(0.1 1.8 0.1)_cv_study_Bm-Hb"
-    
+    study_name = (
+        f"nn_({Bmtrain_min:.1f},{Bmtrain_max:.1f},{train_step:.1f})"
+        f"_to_({Bmreg_min:.2f},{Bmreg_max:.2f},{step:.2f})"
+        f"_Akima-{USE_AKIMA_DATA}"
+    )  # 問題設定と同じstudy名で統一
+    # 確認用に出力
+    print(f"  🏷️  自動生成された実験名: {study_name}")
+
     # --- ★★★ 安全策: 実験名の確認と一時停止 ★★★ ---
     print(f"\n【実行前の確認】")
     print(f"  📂 データベース: {db_url}")
