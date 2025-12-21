@@ -479,46 +479,37 @@ def objective(trial: optuna.trial.Trial) -> float:
     return mean_rmse
 
 # --- Optuna最適化の実行 ---
+# --- Optuna最適化の実行 (MySQL版) ---
 if PERFORM_OPTUNA:
     print("\n" + "="*70)
-    print("Optunaによるハイパーパラメータ探索を開始します...")
+    print("Optunaによるハイパーパラメータ探索を開始します (MySQL)...")
     start_time = time.time()
-    print("最適化に要する時間を計算します", "[start_time=",start_time,"]")
-    print(f"試行回数: {N_TRIALS}")
-    print("="*70)
-# db-urlをここから変更すること
-    # db_url = "sqlite:///search_result.db"
-    # study_name = "nn_hysteresis_study_gaisou" 
-    db_url = "sqlite:///Z:/Optuna_db/search_result_cv.db"
+    
+    # === ★★★ MySQL接続設定 ★★★ ===
+    # 書式: mysql+pymysql://<ユーザー>:<パスワード>@<PC1のIPアドレス>/<DB名>
+    # さっき作ったユーザー名(optuna)とパスワード(password)を入れます
+    db_url = "mysql+pymysql://optuna:Kysym-18459@172.20.145.93/optuna_db"
+    
     study_name = (
-        f"nn_({Bmtrain_min:.2f},{Bmtrain_max:.2f},{train_step:.2f})"
+        f"nn_({Bmtrain_min:.1f},{Bmtrain_max:.1f},{train_step:.1f})"
         f"_to_({Bmreg_min:.2f},{Bmreg_max:.2f},{step:.2f})"
         f"_Akima-{USE_AKIMA_DATA}"
-    )  # 問題設定と同じstudy名で統一
-    # 確認用に出力
-    print(f"  🏷️  自動生成された実験名: {study_name}")
-
-    # --- ★★★ 安全策: 実験名の確認と一時停止 ★★★ ---
+    )
+    
     print(f"\n【実行前の確認】")
-    print(f"  📂 データベース: {db_url}")
-    print(f"  🏷️  実験名 (Study Name): {study_name}")
-    print(f"  ⚠️  注意: 同じ実験名が存在する場合、続きから学習します。")
-    print(f"  (新規に行う場合は、dbファイルを削除するか実験名を変更してください)")
+    print(f"  📂 データベース: MySQL Server (PC1)")
+    print(f"  🔗 接続URL: {db_url}")
+    print(f"  🏷️  実験名: {study_name}")
     print("-" * 50)
     
-    # ユーザーの入力を待つ (Enterが押されるまでここで止まります)
     try:
         input(">> 設定に問題なければ [Enter] キーを押して開始してください... (中止は Ctrl+C)")
     except KeyboardInterrupt:
-        print("\n\n⛔ ユーザーによって処理が中断されました。終了します。")
-        exit()
-    # --------------------------------------------------
-    study = optuna.create_study(
-        direction="minimize", 
-        storage=db_url, 
-        study_name=study_name, 
-        load_if_exists=True
-    )
+        print("\n\n⛔ 中断されました。"); exit()
+        
+    # MySQLなら load_if_exists=True で、複数PCから同時にアクセスしても安全にロック制御されます
+    study = optuna.create_study(direction="minimize", storage=db_url, study_name=study_name, load_if_exists=True)
+    
     study.optimize(objective, n_trials=N_TRIALS)
 
     print("\n" + "="*70)
