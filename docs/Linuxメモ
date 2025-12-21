@@ -1,0 +1,5 @@
+sudo mkdir -p /mnt/z
+
+sudo mount -t drvfs Z: /mnt/z
+
+ls /mnt/z

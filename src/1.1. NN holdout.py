@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 全結合型ニューラルネットワーク (NN) による B-H ヒステリシス回帰スクリプト
-【v9: CV実装(Akima学習固定) + GPU対応 + 型ヒント追加 + Linux/WSL対応版】
+【v8改: ホールドアウト検証 + GPU対応 + 共有DB対応 (Linux/WSL版)】
 """
 import os
 import numpy as np
@@ -17,16 +17,15 @@ import pickle
 from openpyxl.chart import ScatterChart, Reference, Series
 from openpyxl.chart.shapes import GraphicalProperties
 from openpyxl.drawing.line import LineProperties
-import japanize_matplotlib
+import japanize_matplotlib # type: ignore
 from openpyxl.drawing.image import Image as OpenpyxlImage
 from datetime import datetime
 import configparser
-from sklearn.model_selection import train_test_split, KFold
+from sklearn.model_selection import train_test_split
 import optuna
 from typing import Any, Dict, List, Tuple
 import time
 
-# フォント設定（Linux環境に合わせてTakaoPGothicなどを指定する場合もありますが、一旦Times New Romanのままにします）
 plt.rcParams["font.family"] = "Times New Roman"
 plt.rcParams["font.size"] = 20
 
@@ -48,7 +47,7 @@ mat_name = config.get('settings', 'mat_name')
 target_freq = config.getint('settings', 'target_freq')
 PERFORM_OPTUNA = config.getboolean('settings', 'PERFORM_OPTUNA', fallback=False)
 N_TRIALS = config.getint('settings', 'N_TRIALS', fallback=50)
-USE_GPU_SETTING = config.getboolean('settings', 'USE_GPU', fallback=True) # GPU設定
+USE_GPU_SETTING = config.getboolean('settings', 'USE_GPU', fallback=True) # ★追加: GPU設定
 
 # [architecture]
 hidden_layers_str = config.get('architecture', 'HIDDEN_LAYERS')
@@ -69,7 +68,6 @@ LR_RANGE = [lr_min, lr_max]
 
 # ★★★ 追加設定: 過去の結果Excelからハイパーパラメータをロードする場合 ★★★
 LOAD_PARAMS_FROM_EXCEL = False  # Trueにすると、下のパスのExcelからパラメータを読み込みます
-
 # 【修正】Windowsパス(C:\...) を Linuxパス(/mnt/c/...) に変更
 PARAMS_EXCEL_PATH = "/mnt/c/Users/RM-2503-1/Desktop/M1/3_研究/NN_perf/3.Answer/NN_regression_results/50A470/20/20251103_142945_RMSE_summary_50A470_20hz_NN.xlsx"
 
@@ -118,23 +116,21 @@ scaler_Y_path = os.path.join(model_dir, f"scaler_Y_{mat_name}_{target_freq}hz.pk
 truth_data_path = os.path.join(truth_data_base, f"summary_{mat_name}_{step}.xlsx")
 
 # ==============================================================================
-# デバイスの決定ロジック
+# ★追加: デバイスの決定ロジック
 # ==============================================================================
 def get_device(use_gpu_setting: bool) -> torch.device:
     """設定と環境に基づいてデバイスを決定する"""
     if use_gpu_setting and torch.cuda.is_available():
-        current_device = torch.device("cuda")
         print(f"🚀 GPU (CUDA) を使用して計算を行います: {torch.cuda.get_device_name(0)}")
+        return torch.device("cuda")
     else:
         if use_gpu_setting and not torch.cuda.is_available():
             print("⚠️ GPU使用が設定されていますが、利用可能なGPUが見つかりません。CPUを使用します。")
-        current_device = torch.device("cpu")
         print("💻 CPU を使用して計算を行います")
-    return current_device
+        return torch.device("cpu")
 
-# デバイスを決定（グローバル変数として保持）
+# デバイスを決定（グローバル変数）
 device = get_device(USE_GPU_SETTING)
-
 
 class RMSELoss(nn.Module):
     def __init__(self, eps=1e-6):
@@ -144,14 +140,14 @@ class RMSELoss(nn.Module):
     def forward(self, yhat, y):
         return torch.sqrt(self.mse(yhat, y) + self.eps)
 
-def get_activation_function(name: str) -> nn.Module:
+def get_activation_function(name):
     if name.lower() == 'relu': return nn.ReLU()
     elif name.lower() == 'tanh': return nn.Tanh()
     elif name.lower() == 'sigmoid': return nn.Sigmoid()
     else: raise ValueError(f"未対応の活性化関数です: {name}")
 
 class FullyConnectedNN(nn.Module):
-    def __init__(self, input_size: int, output_size: int, hidden_layers: List[int], activation_func: nn.Module = nn.ReLU()):
+    def __init__(self, input_size, output_size, hidden_layers, activation_func=nn.ReLU()):
         super(FullyConnectedNN, self).__init__()
         layers = []
         in_size = input_size
@@ -186,7 +182,7 @@ def create_info_df(amp_value=None):
         info_data["値"].append(f"{amp_value:.2f}")
     return pd.DataFrame(info_data)
 
-def load_hyperparams_from_excel(excel_path: str) -> Tuple[List[int], str, float, int, int, float]:
+def load_hyperparams_from_excel(excel_path):
     print(f"\n📂 Excelファイルからハイパーパラメータを読み込んでいます: {excel_path}")
     try:
         df_info = pd.read_excel(excel_path, sheet_name='Info', engine='openpyxl')
@@ -261,9 +257,6 @@ for amp in train_amp:
     B, H = df['B'].values, df['H'].values
     for b_val, h_val in zip(B, H): X_list.append([amp, b_val]); Y_list.append([h_val])
 
-# ★★★ 通常データの数を記録（Akimaとの区別用） ★★★
-NUM_NORMAL_SAMPLES = len(X_list)
-
 # ★★★ Akimaデータの読み込み処理（USE_AKIMA_DATAフラグで分岐） ★★★
 Hb_vals, Bm_vals = np.array([]), np.array([]) # プロット用に初期化
 
@@ -335,7 +328,7 @@ plot_save_path = os.path.join(plot_output_dir, f"training_data_distribution.png"
 plt.savefig(plot_save_path)
 print(f"✅ 学習データのプロットをファイルに保存しました: {plot_save_path}")
 # print("▶️ 学習データのプロットを表示します。このウィンドウを閉じると、モデルの学習が始まります...")
-# plt.show() # WSL環境でGUIが出ない場合はコメントアウト推奨
+# plt.show() # WSLではGUIが出ない場合があるためコメントアウト推奨
 
 # --- 学習データ点数プロット ---
 print("\n学習データ点数をプロットしています...")
@@ -360,9 +353,11 @@ scaler_X = StandardScaler()
 scaler_Y = StandardScaler()
 X_train_scaled = scaler_X.fit_transform(X_train)
 Y_train_scaled = scaler_Y.fit_transform(Y_train)
+
 should_load_model = not PERFORM_TRAINING
-settings_match = False
-if should_load_model:
+settings_match = False  # NNのハイパーパラメータの初期値: 設定が既存のものがなかった場合は学習を行う
+if should_load_model:  # PERFORM_TRAININGがFalseの場合、既存モデルのロードを試みる
+    print("\n既存のモデル情報を確認しています...")
     try:
         saved_info_df = pd.read_excel(model_info_path, sheet_name='Info')
         saved_settings = pd.Series(saved_info_df.値.values, index=saved_info_df.項目).to_dict()
@@ -388,135 +383,96 @@ if should_load_model:
 print("学習時間計算中")
 
 # ==============================================================================
-# --- Optunaによるハイパーパラメータ最適化 (CV版 + GPU + Akima固定) ---
+# --- Optunaによるハイパーパラメータ最適化 ---
 # ==============================================================================
-def objective(trial: optuna.trial.Trial) -> float:
-    """Optunaの目的関数 (Akima固定 5-Fold CV版)"""
-    # --- 1. ハイパーパラメータの提案 ---
+def objective(trial):
+    """Optunaの目的関数 探索空間はここから編集"""
     lr = trial.suggest_float("lr", LR_RANGE[0], LR_RANGE[1], log=True)
     n_layers = trial.suggest_int("n_layers", 1, 4)
     hidden_layers = [trial.suggest_int(f"n_units_l{i}", 32, 256) for i in range(n_layers)]
     activation_str = trial.suggest_categorical("activation", ["relu", "tanh"])
     batch_size = trial.suggest_categorical("batch_size", [32, 64, 128, 256])
     
-    # 共通の設定
     activation_func = get_activation_function(activation_str)
+    # ★追加: モデルをGPUへ転送
+    model = FullyConnectedNN(input_size=2, output_size=1, hidden_layers=hidden_layers, activation_func=activation_func).to(device)
+    optimizer = optim.Adam(model.parameters(), lr=lr)
     criterion = RMSELoss() if LossFunc == 'RMSE' else nn.MSELoss()
+
+    X_t, X_v, Y_t, Y_v = train_test_split(X_train_scaled, Y_train_scaled, test_size=0.2, random_state=42)
+    X_train_tensor = torch.FloatTensor(X_t)
+    Y_train_tensor = torch.FloatTensor(Y_t)
+    X_val_tensor = torch.FloatTensor(X_v)
+    Y_val_tensor = torch.FloatTensor(Y_v)
     
-    # --- 2. データの分離 (通常データとAkimaデータ) ---
-    # グローバル変数の X_train_scaled, NUM_NORMAL_SAMPLES を使用
-    X_normal = X_train_scaled[:NUM_NORMAL_SAMPLES]
-    Y_normal = Y_train_scaled[:NUM_NORMAL_SAMPLES]
-    
-    X_akima = X_train_scaled[NUM_NORMAL_SAMPLES:]
-    Y_akima = Y_train_scaled[NUM_NORMAL_SAMPLES:]
+    train_dataset = TensorDataset(X_train_tensor, Y_train_tensor)
+    train_loader = DataLoader(dataset=train_dataset, batch_size=batch_size, shuffle=True)
 
-    # --- 3. K-Fold CV の準備 ---
-    K_SPLITS = 5
-    kf = KFold(n_splits=K_SPLITS, shuffle=True, random_state=42)
-    
-    fold_scores = [] 
+    for epoch in range(EPOCHS):
+        model.train()
+        for inputs, targets in train_loader:
+            # ★追加: データをGPUへ転送
+            inputs, targets = inputs.to(device), targets.to(device)
+            
+            optimizer.zero_grad()
+            outputs = model(inputs)
+            loss = criterion(outputs, targets)
+            if torch.isnan(loss): return float('inf')
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=GRAD_CLIP)
+            optimizer.step()
 
-    # --- 4. Foldごとのループ (分割は「通常データ」のみで行う) ---
-    for fold, (train_idx, val_idx) in enumerate(kf.split(X_normal)):
-        
-        # 通常データの分割
-        X_t_norm, X_v_norm = X_normal[train_idx], X_normal[val_idx]
-        Y_t_norm, Y_v_norm = Y_normal[train_idx], Y_normal[val_idx]
+    model.eval()
+    with torch.no_grad():
+        # ★追加: 検証データもGPUへ転送
+        val_outputs = model(X_val_tensor.to(device))
+        val_loss = criterion(val_outputs, Y_val_tensor.to(device))
 
-        # ★重要: 学習データには Akimaデータを結合する (検証データには含めない)
-        X_t = np.concatenate([X_t_norm, X_akima], axis=0)
-        Y_t = np.concatenate([Y_t_norm, Y_akima], axis=0)
-        
-        # 検証データは通常データの一部のみ
-        X_v = X_v_norm
-        Y_v = Y_v_norm
+    return val_loss.item()
 
-        # Tensor化
-        X_train_tensor = torch.FloatTensor(X_t)
-        Y_train_tensor = torch.FloatTensor(Y_t)
-        X_val_tensor = torch.FloatTensor(X_v)
-        Y_val_tensor = torch.FloatTensor(Y_v)
-
-        # DataLoader作成
-        train_dataset = TensorDataset(X_train_tensor, Y_train_tensor)
-        train_loader = DataLoader(dataset=train_dataset, batch_size=batch_size, shuffle=True)
-
-        # モデルとオプティマイザの初期化 (GPU転送)
-        model = FullyConnectedNN(
-            input_size=2, output_size=1, hidden_layers=hidden_layers, activation_func=activation_func
-        ).to(device)
-        
-        optimizer = optim.Adam(model.parameters(), lr=lr)
-
-        # --- 学習ループ ---
-        for epoch in range(EPOCHS):
-            model.train()
-            for inputs, targets in train_loader:
-                # データをGPUへ
-                inputs, targets = inputs.to(device), targets.to(device)
-                
-                optimizer.zero_grad()
-                outputs = model(inputs)
-                loss = criterion(outputs, targets)
-                
-                if torch.isnan(loss):
-                    return float('inf')
-                
-                loss.backward()
-                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=GRAD_CLIP)
-                optimizer.step()
-
-        # --- 検証 ---
-        model.eval()
-        # 検証データもGPUへ
-        X_val_gpu = X_val_tensor.to(device)
-        Y_val_gpu = Y_val_tensor.to(device)
-        
-        with torch.no_grad():
-            val_outputs = model(X_val_gpu)
-            val_loss = criterion(val_outputs, Y_val_gpu)
-            fold_scores.append(val_loss.item())
-    
-    mean_rmse = np.mean(fold_scores)
-    return mean_rmse
-
-# --- Optuna最適化の実行 ---
-# --- Optuna最適化の実行 (MySQL版 -> SQLite版に修正) ---
 if PERFORM_OPTUNA:
     print("\n" + "="*70)
-    print("Optunaによるハイパーパラメータ探索を開始します (SQLite on Z-Drive)...")
+    print("Optunaによるハイパーパラメータ探索を開始します...")
     start_time = time.time()
-    
-    # === ★★★ 【修正】ZドライブのSQLiteを使用する設定 ★★★ ===
-    # 元のMySQL設定はコメントアウトしました
-    # db_url = "mysql+pymysql://optuna:Kysym-18459@172.20.145.93/optuna_db"
-    
-    # Zドライブのパスを指定 (WindowsのZ:\distributed_search_result.db)
+    print("最適化に要する時間を計算します", "[start_time=",start_time,"]")
+    print(f"試行回数: {N_TRIALS}")
+    print("="*70)
+
+    # ★★★ 修正: Zドライブの共有DBを指定 ★★★
     db_path = "/mnt/z/distributed_search_result.db"
+    
+    # SQLiteに絶対パスを渡す
     db_url = f"sqlite:///{db_path}"
 
+    print(f"📂 データベース保存先: {db_path}") 
     
     study_name = (
-        f"nn_cv_({Bmtrain_min:.2f},{Bmtrain_max:.2f},{train_step:.2f})"
+        f"nn_holdout_({Bmtrain_min:.2f},{Bmtrain_max:.2f},{train_step:.2f})"
         f"_to_({Bmreg_min:.2f},{Bmreg_max:.2f},{step:.2f})"
         f"_Akima-{USE_AKIMA_DATA}"
     )
     
+# --- ★★★ 安全策: 実験名の確認と一時停止 ★★★ ---
     print(f"\n【実行前の確認】")
-    print(f"  📂 データベース: SQLite (Zドライブ共有)")
-    print(f"  🔗 接続URL: {db_url}")
-    print(f"  🏷️  実験名: {study_name}")
+    print(f"  📂 データベース: {db_url}")
+    print(f"  🏷️  実験名 (Study Name): {study_name}")
+    print(f"  ⚠️  注意: 同じ実験名が存在する場合、続きから学習します。")
+    print(f"  (新規に行う場合は、dbファイルを削除するか実験名を変更してください)")
     print("-" * 50)
     
+    # ユーザーの入力を待つ (Enterが押されるまでここで止まります)
     try:
         input(">> 設定に問題なければ [Enter] キーを押して開始してください... (中止は Ctrl+C)")
     except KeyboardInterrupt:
-        print("\n\n⛔ 中断されました。"); exit()
-        
-    # SQLiteでも load_if_exists=True でOK
-    study = optuna.create_study(direction="minimize", storage=db_url, study_name=study_name, load_if_exists=True)
-    
+        print("\n\n⛔ ユーザーによって処理が中断されました。終了します。")
+        exit()
+    # --------------------------------------------------
+    study = optuna.create_study(
+        direction="minimize", 
+        storage=db_url, 
+        study_name=study_name, 
+        load_if_exists=True
+    )
     study.optimize(objective, n_trials=N_TRIALS)
 
     print("\n" + "="*70)
@@ -525,10 +481,10 @@ if PERFORM_OPTUNA:
     print("最適化に要した時間は", end_time - start_time, "秒です")
     print(f"最良スコア (検証RMSE): {study.best_value}")
     print("最適なハイパーパラメータ:")
-    best_params: dict[str, Any] = study.best_params # 型ヒント追加
-    print(best_params)
+    print(study.best_params)
     print("="*70)
 
+    best_params: dict[str, Any] = study.best_params
     LEARNING_RATE = best_params['lr']
     HIDDEN_LAYERS = [best_params[f'n_units_l{i}'] for i in range(best_params['n_layers'])]
     activation_func_str = best_params['activation']
@@ -555,17 +511,14 @@ if not PERFORM_OPTUNA and LOAD_PARAMS_FROM_EXCEL and os.path.exists(PARAMS_EXCEL
     settings_match = False 
 
 # ==============================================================================
-# --- モデル学習と結果出力 (GPU対応) ---
+# --- モデル学習と結果出力 ---
 # ==============================================================================
 
 if not settings_match and PERFORM_TRAINING:
     print("\nモデルの学習を開始します...")
     ACTIVATION_FUNC = get_activation_function(activation_func_str)
-    
-    # モデル構築とGPU転送
-    model = FullyConnectedNN(
-        input_size=2, output_size=1, hidden_layers=HIDDEN_LAYERS, activation_func=ACTIVATION_FUNC
-    ).to(device)
+    # ★追加: モデルをGPUへ転送
+    model = FullyConnectedNN(input_size=2, output_size=1, hidden_layers=HIDDEN_LAYERS, activation_func=ACTIVATION_FUNC).to(device)
     
     X_train_tensor = torch.FloatTensor(X_train_scaled)
     Y_train_tensor = torch.FloatTensor(Y_train_scaled)
@@ -578,25 +531,22 @@ if not settings_match and PERFORM_TRAINING:
     for epoch in range(EPOCHS):
         model.train()
         for inputs, targets in train_loader:
-            # データをGPUへ
+            # ★追加: データをGPUへ転送
             inputs, targets = inputs.to(device), targets.to(device)
             
             optimizer.zero_grad()
             outputs = model(inputs)
             loss = criterion(outputs, targets)
-            
             if torch.isnan(loss):
                 print(f"🔴 エラー: Epoch {epoch+1}で損失がnanになりました。学習を停止します。"); exit()
-            
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=GRAD_CLIP)
             optimizer.step()
-            
         if (epoch + 1) % 100 == 0 or epoch == 0:
             print(f'Epoch [{epoch+1}/{EPOCHS}], Loss: {loss.item():.6f}')
             
     print("✅ 学習が完了しました。")
-    # 保存時はCPUに戻して保存する（汎用性のため）
+    # ★追加: CPUに戻して保存
     torch.save(model.to('cpu').state_dict(), model_weights_path)
     
     with open(scaler_X_path, 'wb') as f: pickle.dump(scaler_X, f)
@@ -610,7 +560,7 @@ else:
     ACTIVATION_FUNC = get_activation_function(activation_func_str)
     model = FullyConnectedNN(input_size=2, output_size=1, hidden_layers=HIDDEN_LAYERS, activation_func=ACTIVATION_FUNC)
     model.load_state_dict(torch.load(model_weights_path))
-    # 推論のためにデバイスへ送る
+    # ★追加: 推論用にGPUへ送る
     model.to(device)
     
     with open(scaler_X_path, 'rb') as f: scaler_X = pickle.load(f)
@@ -646,12 +596,11 @@ with torch.no_grad():
         X_pred_scaled = scaler_X.transform(X_pred)
         X_pred_tensor = torch.FloatTensor(X_pred_scaled)
         
-        # GPUで推論
+        # ★追加: 推論時にデータをGPUへ、結果をCPUへ
         X_pred_gpu = X_pred_tensor.to(device)
         Hpred_scaled = model(X_pred_gpu)
-        
-        # 結果をCPUに戻してNumpy化
         Hpred_means = scaler_Y.inverse_transform(Hpred_scaled.cpu().numpy())
+        
         Hpred = Hpred_means.flatten()
         has_ref_data = False
         
@@ -691,7 +640,7 @@ plt.legend()
 plot_save_path_results = os.path.join(plot_output_dir, f"regression_results.png")
 plt.savefig(plot_save_path_results)
 print(f"✅ 回帰結果のプロットをファイルに保存しました: {plot_save_path_results}")
-# plt.show() # GUI用
+# plt.show() # WSL環境でGUIが出ない場合はコメントアウト
 
 # --- Excelへの書き込み ---
 if rmse_results:
