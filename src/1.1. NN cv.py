@@ -570,7 +570,15 @@ if not settings_match and PERFORM_TRAINING:
     X_train_tensor = torch.FloatTensor(X_train_scaled)
     Y_train_tensor = torch.FloatTensor(Y_train_scaled)
     train_dataset = TensorDataset(X_train_tensor, Y_train_tensor)
-    train_loader = DataLoader(dataset=train_dataset, batch_size=BATCH_SIZE, shuffle=True)
+    # num_workers=0 だと1人で作業、数値を上げるとチームで作業します。
+    # 44コアあるので、贅沢に「8〜16」くらい設定しても余裕です！
+    train_loader = DataLoader(
+    dataset=train_dataset,
+    batch_size=BATCH_SIZE,
+    shuffle=True,
+    num_workers=8,  # ← ここを追加！ (推奨: 4, 8, 16 あたりで試す)
+    pin_memory=True # ← これもTrueにするとGPUへの転送が速くなります
+    )
     
     criterion = RMSELoss() if LossFunc == 'RMSE' else nn.MSELoss()
     optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE)
