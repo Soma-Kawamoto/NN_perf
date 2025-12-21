@@ -17,7 +17,6 @@ import pickle
 from openpyxl.chart import ScatterChart, Reference, Series
 from openpyxl.chart.shapes import GraphicalProperties
 from openpyxl.drawing.line import LineProperties
-import japanize_matplotlib
 from openpyxl.drawing.image import Image as OpenpyxlImage
 from datetime import datetime
 import configparser
@@ -414,8 +413,15 @@ if PERFORM_OPTUNA:
     print(f"試行回数: {N_TRIALS}")
     print("="*70)
 
-    db_url = "sqlite:///search_result.db"
-    study_name = "nn_hysteresis_study_gaisou" 
+    # ★★★ 修正: base_dir (NN_perfフォルダ) をそのまま使います ★★★
+    db_path = os.path.join(base_dir, "search_result.db")
+    
+    # SQLiteに絶対パスを渡す
+    db_url = f"sqlite:///{db_path}"
+
+    print(f"📂 データベース保存先: {db_path}") # これで .../NN_perf/search_result.db になるはずです
+    
+    study_name = "nn_hysteresis_study_gaisou"
     
 # --- ★★★ 安全策: 実験名の確認と一時停止 ★★★ ---
     print(f"\n【実行前の確認】")
