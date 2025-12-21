@@ -16,6 +16,7 @@ repo_name = "NN_perf"
 !pip install xlsxwriter
 !pip install openpyxl
 !pip install optuna
+!pip install xlrd
 !pip install -r requirements.txt
 
 !python "/content/NN_perf/1.Training Data Folder/src/1.高橋先生からもらったデータのextracting(xlsx).py"
