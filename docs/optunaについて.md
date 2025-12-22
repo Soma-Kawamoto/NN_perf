@@ -1,5 +1,6 @@
 # optuna dashbord起動方法
-C:\Users\RM-2503-1\AppData\Local\Programs\Python\Python313\Scripts\optuna-dashboard.exe sqlite:///search_result.db
+optuna-dashboard sqlite:////home/soma/NN_perf/docs/search_result.db
+optuna-dashboard sqlite:////home/soma/NN_perf/distributed_search_result.db
 
 # optuna参考文献
 https://tech.preferred.jp/ja/blog/optuna-release/

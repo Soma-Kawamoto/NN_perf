@@ -332,8 +332,8 @@ plt.tight_layout()
 plot_save_path = os.path.join(plot_output_dir, f"training_data_distribution.png")
 plt.savefig(plot_save_path)
 print(f"✅ 学習データのプロットをファイルに保存しました: {plot_save_path}")
-# print("▶️ 学習データのプロットを表示します。このウィンドウを閉じると、モデルの学習が始まります...")
-# plt.show() # WSL環境でGUIが出ない場合はコメントアウト推奨
+print("▶️ 学習データのプロットを表示します。このウィンドウを閉じると、モデルの学習が始まります...")
+plt.show() # WSL環境でGUIが出ない場合はコメントアウト推奨
 
 # --- 学習データ点数プロット ---
 print("\n学習データ点数をプロットしています...")
@@ -488,11 +488,11 @@ if PERFORM_OPTUNA:
     
     # === ★★★ 【修正】ZドライブのSQLiteを使用する設定 ★★★ ===
     # 元のMySQL設定はコメントアウトしました
-    # db_url = "mysql+pymysql://optuna:Kysym-18459@172.20.145.93/optuna_db"
+    db_url = "mysql+pymysql://optuna:Kysym-18459@172.20.145.93/optuna_db"
     
     # Zドライブのパスを指定 (WindowsのZ:\distributed_search_result.db)
-    db_path = "/mnt/z/distributed_search_result.db"
-    db_url = f"sqlite:///{db_path}"
+    # db_path = "/mnt/z/distributed_search_result.db"
+    # db_url = f"sqlite:///{db_path}"
 
     
     study_name = (
