@@ -467,7 +467,16 @@ if PERFORM_OPTUNA:
         f"_Akima-{USE_AKIMA_DATA}"
     )
     
-    # ... (中略: print文など) ...
+    print(f"\n【実行前の確認】")
+    print(f"  📂 データベース: SQLite (Zドライブ共有)")
+    print(f"  🔗 接続URL: {db_url}")
+    print(f"  🏷️  実験名: {study_name}")
+    print("-" * 50)
+    
+    try:
+        input(">> 設定に問題なければ [Enter] キーを押して開始してください... (中止は Ctrl+C)")
+    except KeyboardInterrupt:
+        print("\n\n⛔ 中断されました。"); exit()
 
     # prunerの設定
     pruner = optuna.pruners.MedianPruner(n_startup_trials=5, n_warmup_steps=1000)
