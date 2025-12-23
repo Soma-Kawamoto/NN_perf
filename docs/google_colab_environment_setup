@@ -1,0 +1,62 @@
+# --- 1. まず安全な場所（親フォルダ）に避難する ---
+%cd /content
+
+# --- 2. もし古いフォルダが残っていたら、Pythonの機能で確実に消す ---
+import os
+import shutil
+if os.path.exists("/content/NN_perf"):
+    shutil.rmtree("/content/NN_perf")
+    print("Old folder removed.")
+
+# --- 3. セットアップ情報を定義 ---
+username = "Soma-Kawamoto"
+token = "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"
+repo_name = "NN_perf"
+
+# --- 4. 綺麗な状態で再度Cloneする ---
+!git clone https://{username}:{token}@github.com/{username}/{repo_name}.git
+
+# --- 5. 新しくできたフォルダに移動する ---
+%cd /content/NN_perf
+# !git checkout origin main
+
+# --- 6. フォルダの整理（改名処理） ---
+tasks = [
+    ("/content/NN_perf/1.Training Data Folder", "config sample", "config"),
+    ("/content/NN_perf/1.Training Data Folder", "assets sample", "assets"),
+    ("/content/NN_perf/2.Normal Magnetization Curve Extraction Folder", "config sample", "config"),
+    ("/content/NN_perf", "config copy", "config")
+]
+
+for base_dir, old_name, new_name in tasks:
+    old_path = os.path.join(base_dir, old_name)
+    new_path = os.path.join(base_dir, new_name)
+    if os.path.exists(old_path):
+        if os.path.exists(new_path):
+            shutil.rmtree(new_path)
+        os.rename(old_path, new_path)
+        print(f"✅ Renamed: {old_name} -> {new_name}")
+
+# --- 7. ライブラリインストールと実行 ---
+!pip install xlsxwriter openpyxl optuna xlrd
+!python "/content/NN_perf/1.Training Data Folder/src/1.高橋先生からもらったデータのextracting(xlsx).py"
+!python "/content/NN_perf/1.Training Data Folder/src/2.Fourier Transform Correction.py"
+!python "/content/NN_perf/1.Training Data Folder/src/3.how_reduct.py"
+!python "/content/NN_perf/1.Training Data Folder/src/4.Ascending branch of the hysteresis loop.py"
+!python "/content/NN_perf/1.Training Data Folder/src/5.Downsampling.py"
+!python "/content/NN_perf/1.Training Data Folder/src/6.Reference data.py"
+!python "/content/NN_perf/1.Training Data Folder/src/8.Hc_Br.py"
+# --- 8. Bm-Hbの準備 ---
+!python "/content/NN_perf/2.Normal Magnetization Curve Extraction Folder/src/1. Raw Normal Magnetization Curve.py"
+!python "/content/NN_perf/2.Normal Magnetization Curve Extraction Folder/src/2. Akima spline interpolation.py"
+
+#! --- 9. Google Driveをマウントして保存先を確保 ---
+from google.colab import drive
+drive.mount('/content/drive')
+
+# 保存用フォルダを作成（例：NN_perf/optuna_backup）
+import os
+backup_dir = "/content/drive/MyDrive/NN_perf/optuna_backup"
+os.makedirs(backup_dir, exist_ok=True)
+
+!python "/content/NN_perf/src/1.1. NN cv.py"

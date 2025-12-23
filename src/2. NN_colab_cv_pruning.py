@@ -442,12 +442,24 @@ def objective(trial: optuna.trial.Trial) -> float:
 # --- Optuna最適化の実行 ---
 if PERFORM_OPTUNA:
     print("\n" + "="*70)
-    print("Optunaによるハイパーパラメータ探索を開始します (SQLite on Z-Drive)...")
+    print("Optunaによるハイパーパラメータ探索を開始します (SQLite on Colab)...")
     start_time = time.time()
     
-# --- 修正版：SQLite (Colabローカル) ---
-    db_path = "/content/optuna_db.db"
-    db_url = f"sqlite:///{db_path}"  # sqlite:/// と /content/... が合わさって sqlite://// になります
+    # --- [追加設定] Google Driveのバックアップ先 ---
+    import shutil
+    # マウント済みの前提。フォルダ名は研究環境に合わせて適宜変えてください
+    backup_drive_path = "/content/drive/MyDrive/NN_perf/optuna_backup/optuna_db_backup.db"
+    os.makedirs(os.path.dirname(backup_drive_path), exist_ok=True)
+
+    db_path = "/content/optuna_db.db" # ローカル（爆速）
+    db_url = f"sqlite:///{db_path}"
+
+    # 【ステップ2：バックアップ関数の実装】
+    def save_db_callback(study, trial):
+        """1試行（Trial）終わるごとにDriveにファイルをコピーする"""
+        if os.path.exists(db_path):
+            shutil.copy(db_path, backup_drive_path)
+            # print(f" 💾 Trial {trial.number} 終了: Driveへバックアップ完了")
 
     study_name = (
         f"nn_cv_({Bmtrain_min:.2f},{Bmtrain_max:.2f},{train_step:.2f})"
@@ -455,16 +467,9 @@ if PERFORM_OPTUNA:
         f"_Akima-{USE_AKIMA_DATA}"
     )
     
-    print(f"\n【実行前の確認】")
-    print(f"  📂 データベース: {db_url}")
-    print(f"  🏷️  実験名: {study_name}")
-    print("-" * 50)
-    
-    try:
-        input(">> 設定に問題なければ [Enter] キーを押して開始してください... (中止は Ctrl+C)")
-    except KeyboardInterrupt:
-        print("\n\n⛔ 中断されました。"); exit()
-        
+    # ... (中略: print文など) ...
+
+    # prunerの設定
     pruner = optuna.pruners.MedianPruner(n_startup_trials=5, n_warmup_steps=1000)
 
     study = optuna.create_study(
@@ -475,14 +480,14 @@ if PERFORM_OPTUNA:
         pruner=pruner 
     )
     
-    study.optimize(objective, n_trials=N_TRIALS)
+    # 【ステップ3：optimizeへの登録】
+    study.optimize(
+        objective, 
+        n_trials=N_TRIALS, 
+        callbacks=[save_db_callback] # ここに登録！
+    )
 
     print("\n" + "="*70)
-    print("Optunaによる探索が完了しました。")
-    print(f"最良スコア (検証RMSE): {study.best_value}")
-    print("最適なハイパーパラメータ:", study.best_params)
-    print("="*70)
-
     best_params: dict[str, Any] = study.best_params
     LEARNING_RATE = best_params['lr']
     HIDDEN_LAYERS = [best_params[f'n_units_l{i}'] for i in range(best_params['n_layers'])]
