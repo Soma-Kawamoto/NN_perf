@@ -444,7 +444,7 @@ if PERFORM_OPTUNA:
     )
     
     # 既存のStudyがあるか確認し、無ければ新規作成
-    pruner = optuna.pruners.MedianPruner(n_startup_trials=5, n_warmup_steps=1000)
+    pruner = optuna.pruners.MedianPruner(n_startup_trials=20, n_warmup_steps=5000)
     study = optuna.create_study(direction="minimize", storage=db_url, study_name=study_name, load_if_exists=True, pruner=pruner)
     
     study.optimize(objective, n_trials=N_TRIALS)
@@ -516,7 +516,8 @@ else:
     print(f"\n✅ モデルを読み込みます")
     ACTIVATION_FUNC = get_activation_function(activation_func_str)
     model = FullyConnectedNN(input_size=2, output_size=1, hidden_layers=HIDDEN_LAYERS, activation_func=ACTIVATION_FUNC)
-    model.load_state_dict(torch.load(model_weights_path))
+# map_locationを追加することで、読み込み時に直接ターゲットデバイスへ展開します
+    model.load_state_dict(torch.load(model_weights_path, map_location=device))
     model.to(device)
     with open(scaler_X_path, 'rb') as f: scaler_X = pickle.load(f)
     with open(scaler_Y_path, 'rb') as f: scaler_Y = pickle.load(f)

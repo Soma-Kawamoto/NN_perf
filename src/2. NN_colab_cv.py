@@ -415,8 +415,9 @@ if PERFORM_OPTUNA:
     print("="*70)
 
     # ★★★ Colab用のDB設定 (ローカルディスク) ★★★
-    db_path = os.path.join(PROJECT_ROOT, "distributed_search_result.db")
-    db_url = f"sqlite:///{db_path}"
+# --- 修正版：SQLite (Colabローカル) ---
+    db_path = "/content/optuna_db.db"
+    db_url = f"sqlite:///{db_path}"  # sqlite:/// と /content/... が合わさって sqlite://// になります
 
     print(f"📂 データベース保存先: {db_path}") 
     

@@ -1,7 +1,7 @@
 # optuna dashbord起動方法
 optuna-dashboard sqlite:////home/soma/NN_perf/docs/search_result.db
-optuna-dashboard sqlite:////home/soma/NN_perf/distributed_search_result.db
-
+optuna-dashboard sqlite:////home/soma/NN_perf/docs/distributed_search_result.db
+optuna-dashboard /mnt/z/distributed_search_result.db
 # optuna参考文献
 https://tech.preferred.jp/ja/blog/optuna-release/
 

@@ -421,7 +421,13 @@ if PERFORM_OPTUNA:
     DB_FILENAME = "distributed_search_result.db"
     
     # 実験名（2台とも「完全に同じ名前」にしてください）
-    STUDY_NAME = "nn_hysteresis_distributed_study"
+    study_name = (
+        f"nn_({Bmtrain_min:.2f},{Bmtrain_max:.2f},{train_step:.2f})"
+        f"_to_({Bmreg_min:.2f},{Bmreg_max:.2f},{step:.2f})"
+        f"_Akima-{USE_AKIMA_DATA}"
+    )
+
+    STUDY_NAME = study_name
     # ==============================================================================
 
     # 共有フォルダが存在するか確認

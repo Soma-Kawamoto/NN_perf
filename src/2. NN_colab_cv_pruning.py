@@ -445,8 +445,9 @@ if PERFORM_OPTUNA:
     print("Optunaによるハイパーパラメータ探索を開始します (SQLite on Z-Drive)...")
     start_time = time.time()
     
-    db_path = "/mnt/z/distributed_search_result.db"
-    db_url = f"sqlite:///{db_path}"
+# --- 修正版：SQLite (Colabローカル) ---
+    db_path = "/content/optuna_db.db"
+    db_url = f"sqlite:///{db_path}"  # sqlite:/// と /content/... が合わさって sqlite://// になります
 
     study_name = (
         f"nn_cv_({Bmtrain_min:.2f},{Bmtrain_max:.2f},{train_step:.2f})"
