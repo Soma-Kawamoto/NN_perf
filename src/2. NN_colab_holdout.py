@@ -380,13 +380,14 @@ def objective(trial):
     
     train_dataset = TensorDataset(X_train_tensor, Y_train_tensor)
     
+    cpu_count = os.cpu_count()
     # ★重要: 44コアのCPUを活用する設定 (num_workers)
     # ローカルディスク上なのでpin_memory=Falseでも十分速いですが、Trueでも問題ありません
     train_loader = DataLoader(
         dataset=train_dataset, 
         batch_size=batch_size, 
         shuffle=True,
-        num_workers=16, # 44コアあるので16くらいまで上げてもOK
+        num_workers=cpu_count, # 44コアあるので16くらいまで上げてもOK
         persistent_workers=True
     )
 
@@ -410,42 +411,50 @@ def objective(trial):
 
 if PERFORM_OPTUNA:
     print("\n" + "="*70)
-    print("Optunaによるハイパーパラメータ探索を開始します (Local Disk)...")
+    print("Optunaによるハイパーパラメータ探索を開始します (SQLite on Colab)...")
     start_time = time.time()
-    print("最適化に要する時間を計算します", "[start_time=",start_time,"]")
-    print(f"試行回数: {N_TRIALS}")
-    print("="*70)
-
-    # ★★★ Colab用のDB設定 (ローカルディスク) ★★★
-# --- 修正版：SQLite (Colabローカル) ---
-    db_path = "/content/optuna_db.db"
-    db_url = f"sqlite:///{db_path}"  # sqlite:/// と /content/... が合わさって sqlite://// になります
-
-    print(f"📂 データベース保存先: {db_path}") 
     
+    # --- [追加設定] Google Driveのバックアップ先 ---
+    import shutil
+    # マウント済みの前提。フォルダ名は研究環境に合わせて適宜変えてください
+    backup_drive_path = "/content/drive/MyDrive/NN_perf/optuna_backup/optuna_db_backup.db"
+    os.makedirs(os.path.dirname(backup_drive_path), exist_ok=True)
+
+    db_path = "/content/optuna_db.db" # ローカル（爆速）
+    db_url = f"sqlite:///{db_path}"
+
+    # 【ステップ2：バックアップ関数の実装】
+    def save_db_callback(study, trial):
+        """1試行（Trial）終わるごとにDriveにファイルをコピーする"""
+        if os.path.exists(db_path):
+            shutil.copy(db_path, backup_drive_path)
+            # print(f" 💾 Trial {trial.number} 終了: Driveへバックアップ完了")
+
     study_name = (
-        f"nn_({Bmtrain_min:.2f},{Bmtrain_max:.2f},{train_step:.2f})"
+        f"nn_cv_({Bmtrain_min:.2f},{Bmtrain_max:.2f},{train_step:.2f})"
         f"_to_({Bmreg_min:.2f},{Bmreg_max:.2f},{step:.2f})"
         f"_Akima-{USE_AKIMA_DATA}"
     )
     
-    print(f"\n【実行前の確認】")
-    print(f"  📂 データベース: {db_url}")
-    print(f"  🏷️  実験名 (Study Name): {study_name}")
-    print("-" * 50)
-    
-    try:
-        input(">> 設定に問題なければ [Enter] キーを押して開始してください... (中止は Ctrl+C)")
-    except KeyboardInterrupt:
-        print("\n\n⛔ 中断されました。"); exit()
+    # ... (中略: print文など) ...
+
+    # prunerの設定
+    pruner = optuna.pruners.MedianPruner(n_startup_trials=5, n_warmup_steps=1000)
 
     study = optuna.create_study(
         direction="minimize", 
         storage=db_url, 
         study_name=study_name, 
-        load_if_exists=True
+        load_if_exists=True,
+        pruner=pruner 
     )
-    study.optimize(objective, n_trials=N_TRIALS)
+    
+    # 【ステップ3：optimizeへの登録】
+    study.optimize(
+        objective, 
+        n_trials=N_TRIALS, 
+        callbacks=[save_db_callback] # ここに登録！
+    )
 
     print("\n" + "="*70)
     print("Optunaによる探索が完了しました。")
