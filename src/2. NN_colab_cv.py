@@ -433,11 +433,28 @@ if PERFORM_OPTUNA:
         f"_to_({Bmreg_min:.2f},{Bmreg_max:.2f},{step:.2f})"
         f"_Akima-{USE_AKIMA_DATA}"
     )
-    
-    # ... (中略: print文など) ...
 
     # prunerの設定
     pruner = optuna.pruners.MedianPruner(n_startup_trials=5, n_warmup_steps=1000)
+
+    # --- [追加] 実行前の確認ブロック ---
+    print(f"\n" + "="*70)
+    print(f"【実行前の確認】")
+    print(f"  📂 データベース: {db_url}")
+    print(f"  🏷️  実験名: {study_name}")
+    print(f"  🚀 使用デバイス: {device}")
+    print(f"  🔢 試行回数: {N_TRIALS} 回")
+    print("-" * 50)
+    
+    try:
+        # ここでユーザーの入力を待機します
+        user_input = input(">> 設定に問題なければ [Enter] キーを押して開始してください... (中止は Ctrl+C)")
+    except KeyboardInterrupt:
+        print("\n\n⛔ ユーザーによって実行が中断されました。"); exit()
+    except EOFError:
+        # 非対話環境（バックグラウンド実行など）で入力が取れない場合の対策
+        print("\n⚠️ 入力待ちがスキップされました（非対話環境の可能性があります）。")
+    # ----------------------------------
 
     study = optuna.create_study(
         direction="minimize", 

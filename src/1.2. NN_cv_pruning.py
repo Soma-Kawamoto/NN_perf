@@ -445,6 +445,27 @@ if PERFORM_OPTUNA:
     
     # 既存のStudyがあるか確認し、無ければ新規作成
     pruner = optuna.pruners.MedianPruner(n_startup_trials=20, n_warmup_steps=5000)
+
+    # --- [追加] 実行前の確認ブロック ---
+    print(f"\n" + "="*70)
+    print(f"【実行前の確認】")
+    print(f"  📂 データベース: {db_url}")
+    print(f"  🏷️  実験名: {study_name}")
+    print(f"  🚀 使用デバイス: {device}")
+    print(f"  🔢 試行回数: {N_TRIALS} 回")
+    print("-" * 50)
+    
+    try:
+        # ここでユーザーの入力を待機します
+        user_input = input(">> 設定に問題なければ [Enter] キーを押して開始してください... (中止は Ctrl+C)")
+    except KeyboardInterrupt:
+        print("\n\n⛔ ユーザーによって実行が中断されました。"); exit()
+    except EOFError:
+        # 非対話環境（バックグラウンド実行など）で入力が取れない場合の対策
+        print("\n⚠️ 入力待ちがスキップされました（非対話環境の可能性があります）。")
+    # ----------------------------------
+
+    # この後に既存の study 作成コードが続きます
     study = optuna.create_study(direction="minimize", storage=db_url, study_name=study_name, load_if_exists=True, pruner=pruner)
     
     study.optimize(objective, n_trials=N_TRIALS)

@@ -421,7 +421,11 @@ if PERFORM_OPTUNA:
 
     print(f"📂 データベース保存先: {db_path}") # これで .../NN_perf/search_result.db になるはずです
     
-    study_name = "nn_hysteresis_study_gaisou"
+    study_name = (
+        f"nn_({Bmtrain_min:.2f},{Bmtrain_max:.2f},{train_step:.2f})"
+        f"_to_({Bmreg_min:.2f},{Bmreg_max:.2f},{step:.2f})"
+        f"_Akima-{USE_AKIMA_DATA}"
+    )
     
 # --- ★★★ 安全策: 実験名の確認と一時停止 ★★★ ---
     print(f"\n【実行前の確認】")
