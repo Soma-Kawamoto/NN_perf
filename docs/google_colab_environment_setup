@@ -38,7 +38,7 @@ for base_dir, old_name, new_name in tasks:
         print(f"✅ Renamed: {old_name} -> {new_name}")
 
 # --- 7. ライブラリインストールと実行 ---
-!pip install xlsxwriter openpyxl optuna xlrd
+!pip install xlsxwriter openpyxl optuna xlrd japanize-matplotlib
 !python "/content/NN_perf/1.Training Data Folder/src/1.高橋先生からもらったデータのextracting(xlsx).py"
 !python "/content/NN_perf/1.Training Data Folder/src/2.Fourier Transform Correction.py"
 !python "/content/NN_perf/1.Training Data Folder/src/3.how_reduct.py"
