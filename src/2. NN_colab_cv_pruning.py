@@ -341,7 +341,7 @@ if should_load_model:
 # --- Optunaによるハイパーパラメータ最適化 (Pruning実装版) ---
 # ==============================================================================
 def objective(trial: optuna.trial.Trial) -> float:
-    """Optunaの目的関数 (Pruning + Early Stopping + CV)"""
+    """Optunaの目的関数 (Akimaも検証データに含める 5-Fold CV版)"""
     # --- 1. ハイパーパラメータの提案 ---
     lr = trial.suggest_float("lr", LR_RANGE[0], LR_RANGE[1], log=True)
     n_layers = trial.suggest_int("n_layers", 1, 4)
@@ -349,38 +349,27 @@ def objective(trial: optuna.trial.Trial) -> float:
     activation_str = trial.suggest_categorical("activation", ["relu", "tanh"])
     batch_size = trial.suggest_categorical("batch_size", [32, 64, 128, 256])
     
-    # Early Stoppingの設定 (例えば 200エポック更新がなければ止める)
     PATIENCE = 500 
-    
-    # 共通の設定
     activation_func = get_activation_function(activation_str)
     criterion = RMSELoss() if LossFunc == 'RMSE' else nn.MSELoss()
     
-    # データの分離
-    X_normal = X_train_scaled[:NUM_NORMAL_SAMPLES]
-    Y_normal = Y_train_scaled[:NUM_NORMAL_SAMPLES]
-    X_akima = X_train_scaled[NUM_NORMAL_SAMPLES:]
-    Y_akima = Y_train_scaled[NUM_NORMAL_SAMPLES:]
-
+    # --- 2. K-Fold CV の準備 (全データ X_train_scaled を対象にする) ---
     K_SPLITS = 5
     kf = KFold(n_splits=K_SPLITS, shuffle=True, random_state=42)
     fold_scores = [] 
 
-    # --- Foldごとのループ ---
-    for fold, (train_idx, val_idx) in enumerate(kf.split(X_normal)):
+    # --- 3. Foldごとのループ (全データから学習用と検証用を分割) ---
+    for fold, (train_idx, val_idx) in enumerate(kf.split(X_train_scaled)):
         
-        # データの準備 (省略: 前回と同じ)
-        X_t_norm, X_v_norm = X_normal[train_idx], X_normal[val_idx]
-        Y_t_norm, Y_v_norm = Y_normal[train_idx], Y_normal[val_idx]
-        X_t = np.concatenate([X_t_norm, X_akima], axis=0)
-        Y_t = np.concatenate([Y_t_norm, Y_akima], axis=0)
-        X_v = X_v_norm
-        Y_v = Y_v_norm
+        # 学習データと検証データを全データから抽出
+        X_t, X_v = X_train_scaled[train_idx], X_train_scaled[val_idx]
+        Y_t, Y_v = Y_train_scaled[train_idx], Y_train_scaled[val_idx]
 
-        X_train_tensor = torch.FloatTensor(X_t)
-        Y_train_tensor = torch.FloatTensor(Y_t)
-        X_val_gpu = torch.FloatTensor(X_v).to(device)
-        Y_val_gpu = torch.FloatTensor(Y_v).to(device)
+        # Tensor化してデバイスへ転送
+        X_train_tensor = torch.FloatTensor(X_t).to(device)
+        Y_train_tensor = torch.FloatTensor(Y_t).to(device)
+        X_val_tensor = torch.FloatTensor(X_v).to(device)
+        Y_val_tensor = torch.FloatTensor(Y_v).to(device)
 
         train_dataset = TensorDataset(X_train_tensor, Y_train_tensor)
         train_loader = DataLoader(dataset=train_dataset, batch_size=batch_size, shuffle=True)
@@ -390,15 +379,13 @@ def objective(trial: optuna.trial.Trial) -> float:
         ).to(device)
         optimizer = optim.Adam(model.parameters(), lr=lr)
 
-        # ★ アーリーストップ用変数
         best_loss_in_fold = float('inf')
         no_improve_cnt = 0
 
-        # --- 学習ループ ---
+        # --- 4. 学習ループ ---
         for epoch in range(EPOCHS):
             model.train()
             for inputs, targets in train_loader:
-                inputs, targets = inputs.to(device), targets.to(device)
                 optimizer.zero_grad()
                 outputs = model(inputs)
                 loss = criterion(outputs, targets)
@@ -407,38 +394,33 @@ def objective(trial: optuna.trial.Trial) -> float:
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=GRAD_CLIP)
                 optimizer.step()
 
-            # ★ 毎回検証してアーリーストップ判定を行う
-            # (100回に1回ではなく、毎回チェックした方が正確に止まれます)
+            # --- 5. 検証とPruning ---
             model.eval()
             with torch.no_grad():
-                val_outputs = model(X_val_gpu)
-                val_loss = criterion(val_outputs, Y_val_gpu)
+                val_outputs = model(X_val_tensor)
+                val_loss = criterion(val_outputs, Y_val_tensor)
             
             val_loss_val = val_loss.item()
-
-            # 1. Optunaへの報告 (Pruning)
+            
+            # Optunaへの報告と枝切り
             current_step = fold * EPOCHS + epoch
             trial.report(val_loss_val, current_step)
             if trial.should_prune():
                 raise optuna.TrialPruned()
 
-            # 2. アーリーストップ判定 (Early Stopping)
+            # Early Stopping判定
             if val_loss_val < best_loss_in_fold:
                 best_loss_in_fold = val_loss_val
-                no_improve_cnt = 0 # 記録更新！カウントリセット
+                no_improve_cnt = 0
             else:
-                no_improve_cnt += 1 # 更新ならず...カウントアップ
+                no_improve_cnt += 1
             
             if no_improve_cnt >= PATIENCE:
-                # print(f"  Fold {fold}: Early stopping at epoch {epoch}")
-                break # このFoldの学習を打ち切り
+                break
 
-        # Fold終了時のベストスコアを記録
         fold_scores.append(best_loss_in_fold)
     
-    mean_rmse = np.mean(fold_scores)
-    return mean_rmse
-
+    return np.mean(fold_scores)
 # --- Optuna最適化の実行 ---
 if PERFORM_OPTUNA:
     print("\n" + "="*70)
@@ -466,21 +448,30 @@ if PERFORM_OPTUNA:
         f"_to_({Bmreg_min:.2f},{Bmreg_max:.2f},{step:.2f})"
         f"_Akima-{USE_AKIMA_DATA}"
     )
-    
-    print(f"\n【実行前の確認】")
-    print(f"  📂 データベース: SQLite (Zドライブ共有)")
-    print(f"  🔗 接続URL: {db_url}")
-    print(f"  🏷️  実験名: {study_name}")
-    print("-" * 50)
-    
-    try:
-        input(">> 設定に問題なければ [Enter] キーを押して開始してください... (中止は Ctrl+C)")
-    except KeyboardInterrupt:
-        print("\n\n⛔ 中断されました。"); exit()
 
     # prunerの設定
     pruner = optuna.pruners.MedianPruner(n_startup_trials=5, n_warmup_steps=1000)
 
+    # --- [追加] 実行前の確認ブロック ---
+    print(f"\n" + "="*70)
+    print(f"【実行前の確認】")
+    print(f"  📂 データベース: {db_url}")
+    print(f"  🏷️  実験名: {study_name}")
+    print(f"  🚀 使用デバイス: {device}")
+    print(f"  🔢 試行回数: {N_TRIALS} 回")
+    print("-" * 50)
+    
+    try:
+        # ここでユーザーの入力を待機します
+        user_input = input(">> 設定に問題なければ [Enter] キーを押して開始してください... (中止は Ctrl+C)")
+    except KeyboardInterrupt:
+        print("\n\n⛔ ユーザーによって実行が中断されました。"); exit()
+    except EOFError:
+        # 非対話環境（バックグラウンド実行など）で入力が取れない場合の対策
+        print("\n⚠️ 入力待ちがスキップされました（非対話環境の可能性があります）。")
+    # ----------------------------------
+
+    # この後に既存の study 作成コードが続きます
     study = optuna.create_study(
         direction="minimize", 
         storage=db_url, 

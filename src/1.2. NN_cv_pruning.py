@@ -348,7 +348,8 @@ if should_load_model:
 # --- Optunaによるハイパーパラメータ最適化 (Pruning実装版) ---
 # ==============================================================================
 def objective(trial: optuna.trial.Trial) -> float:
-    """Optunaの目的関数 (Pruning + Early Stopping + CV)"""
+    """Optunaの目的関数 (Akimaも検証データに含める 5-Fold CV版)"""
+    # --- 1. ハイパーパラメータの提案 ---
     lr = trial.suggest_float("lr", LR_RANGE[0], LR_RANGE[1], log=True)
     n_layers = trial.suggest_int("n_layers", 1, 4)
     hidden_layers = [trial.suggest_int(f"n_units_l{i}", 32, 256) for i in range(n_layers)]
@@ -359,24 +360,19 @@ def objective(trial: optuna.trial.Trial) -> float:
     activation_func = get_activation_function(activation_str)
     criterion = RMSELoss() if LossFunc == 'RMSE' else nn.MSELoss()
     
-    X_normal = X_train_scaled[:NUM_NORMAL_SAMPLES]
-    Y_normal = Y_train_scaled[:NUM_NORMAL_SAMPLES]
-    X_akima = X_train_scaled[NUM_NORMAL_SAMPLES:]
-    Y_akima = Y_train_scaled[NUM_NORMAL_SAMPLES:]
-
+    # --- 2. K-Fold CV の準備 (全データ X_train_scaled を対象にする) ---
     K_SPLITS = 5
     kf = KFold(n_splits=K_SPLITS, shuffle=True, random_state=42)
     fold_scores = [] 
 
-    for fold, (train_idx, val_idx) in enumerate(kf.split(X_normal)):
-        X_t_norm, X_v_norm = X_normal[train_idx], X_normal[val_idx]
-        Y_t_norm, Y_v_norm = Y_normal[train_idx], Y_normal[val_idx]
-        X_t = np.concatenate([X_t_norm, X_akima], axis=0)
-        Y_t = np.concatenate([Y_t_norm, Y_akima], axis=0)
-        X_v = X_v_norm
-        Y_v = Y_v_norm
+    # --- 3. Foldごとのループ (全データから学習用と検証用を分割) ---
+    for fold, (train_idx, val_idx) in enumerate(kf.split(X_train_scaled)):
+        
+        # 学習データと検証データを全データから抽出
+        X_t, X_v = X_train_scaled[train_idx], X_train_scaled[val_idx]
+        Y_t, Y_v = Y_train_scaled[train_idx], Y_train_scaled[val_idx]
 
-        # デバイスへの転送
+        # Tensor化してデバイスへ転送
         X_train_tensor = torch.FloatTensor(X_t).to(device)
         Y_train_tensor = torch.FloatTensor(Y_t).to(device)
         X_val_tensor = torch.FloatTensor(X_v).to(device)
@@ -393,6 +389,7 @@ def objective(trial: optuna.trial.Trial) -> float:
         best_loss_in_fold = float('inf')
         no_improve_cnt = 0
 
+        # --- 4. 学習ループ ---
         for epoch in range(EPOCHS):
             model.train()
             for inputs, targets in train_loader:
@@ -404,17 +401,21 @@ def objective(trial: optuna.trial.Trial) -> float:
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=GRAD_CLIP)
                 optimizer.step()
 
+            # --- 5. 検証とPruning ---
             model.eval()
             with torch.no_grad():
                 val_outputs = model(X_val_tensor)
                 val_loss = criterion(val_outputs, Y_val_tensor)
             
             val_loss_val = val_loss.item()
+            
+            # Optunaへの報告と枝切り
             current_step = fold * EPOCHS + epoch
             trial.report(val_loss_val, current_step)
             if trial.should_prune():
                 raise optuna.TrialPruned()
 
+            # Early Stopping判定
             if val_loss_val < best_loss_in_fold:
                 best_loss_in_fold = val_loss_val
                 no_improve_cnt = 0
@@ -427,14 +428,13 @@ def objective(trial: optuna.trial.Trial) -> float:
         fold_scores.append(best_loss_in_fold)
     
     return np.mean(fold_scores)
-
 # --- Optuna実行 ---
 if PERFORM_OPTUNA:
     print("\n" + "="*70)
     print("Optunaによるハイパーパラメータ探索を開始します...")
     start_time = time.time()
     
-    db_path = "/mnt/z/distributed_search_result.db" # 共有フォルダ等の環境に合わせる
+    db_path = "/mnt/z/miniloop_predict.db" # 共有フォルダ等の環境に合わせる
     db_url = f"sqlite:///{db_path}"
 
     study_name = (

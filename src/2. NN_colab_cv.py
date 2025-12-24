@@ -356,56 +356,87 @@ print("学習時間計算中")
 # ==============================================================================
 # --- Optunaによるハイパーパラメータ最適化 ---
 # ==============================================================================
-def objective(trial):
+def objective(trial: optuna.trial.Trial) -> float:
+    """Optunaの目的関数 (Akimaも検証データに含める 5-Fold CV版)"""
+    # --- 1. ハイパーパラメータの提案 ---
     lr = trial.suggest_float("lr", LR_RANGE[0], LR_RANGE[1], log=True)
     n_layers = trial.suggest_int("n_layers", 1, 4)
     hidden_layers = [trial.suggest_int(f"n_units_l{i}", 32, 256) for i in range(n_layers)]
     activation_str = trial.suggest_categorical("activation", ["relu", "tanh"])
     batch_size = trial.suggest_categorical("batch_size", [32, 64, 128, 256])
     
+    PATIENCE = 500 
     activation_func = get_activation_function(activation_str)
-    model = FullyConnectedNN(input_size=2, output_size=1, hidden_layers=hidden_layers, activation_func=activation_func).to(device)
-    optimizer = optim.Adam(model.parameters(), lr=lr)
     criterion = RMSELoss() if LossFunc == 'RMSE' else nn.MSELoss()
-
-    X_t, X_v, Y_t, Y_v = train_test_split(X_train_scaled, Y_train_scaled, test_size=0.2, random_state=42)
     
-    # データをTensor化してデバイスへ
-    X_train_tensor = torch.FloatTensor(X_t).to(device)
-    Y_train_tensor = torch.FloatTensor(Y_t).to(device)
-    X_val_tensor = torch.FloatTensor(X_v).to(device)
-    Y_val_tensor = torch.FloatTensor(Y_v).to(device)
+    # --- 2. K-Fold CV の準備 (全データ X_train_scaled を対象にする) ---
+    K_SPLITS = 5
+    kf = KFold(n_splits=K_SPLITS, shuffle=True, random_state=42)
+    fold_scores = [] 
+
+    # --- 3. Foldごとのループ (全データから学習用と検証用を分割) ---
+    for fold, (train_idx, val_idx) in enumerate(kf.split(X_train_scaled)):
+        
+        # 学習データと検証データを全データから抽出
+        X_t, X_v = X_train_scaled[train_idx], X_train_scaled[val_idx]
+        Y_t, Y_v = Y_train_scaled[train_idx], Y_train_scaled[val_idx]
+
+        # Tensor化してデバイスへ転送
+        X_train_tensor = torch.FloatTensor(X_t).to(device)
+        Y_train_tensor = torch.FloatTensor(Y_t).to(device)
+        X_val_tensor = torch.FloatTensor(X_v).to(device)
+        Y_val_tensor = torch.FloatTensor(Y_v).to(device)
+
+        train_dataset = TensorDataset(X_train_tensor, Y_train_tensor)
+        train_loader = DataLoader(dataset=train_dataset, batch_size=batch_size, shuffle=True)
+
+        model = FullyConnectedNN(
+            input_size=2, output_size=1, hidden_layers=hidden_layers, activation_func=activation_func
+        ).to(device)
+        optimizer = optim.Adam(model.parameters(), lr=lr)
+
+        best_loss_in_fold = float('inf')
+        no_improve_cnt = 0
+
+        # --- 4. 学習ループ ---
+        for epoch in range(EPOCHS):
+            model.train()
+            for inputs, targets in train_loader:
+                optimizer.zero_grad()
+                outputs = model(inputs)
+                loss = criterion(outputs, targets)
+                if torch.isnan(loss): return float('inf')
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=GRAD_CLIP)
+                optimizer.step()
+
+            # --- 5. 検証とPruning ---
+            model.eval()
+            with torch.no_grad():
+                val_outputs = model(X_val_tensor)
+                val_loss = criterion(val_outputs, Y_val_tensor)
+            
+            val_loss_val = val_loss.item()
+            
+            # Optunaへの報告と枝切り
+            current_step = fold * EPOCHS + epoch
+            trial.report(val_loss_val, current_step)
+            if trial.should_prune():
+                raise optuna.TrialPruned()
+
+            # Early Stopping判定
+            if val_loss_val < best_loss_in_fold:
+                best_loss_in_fold = val_loss_val
+                no_improve_cnt = 0
+            else:
+                no_improve_cnt += 1
+            
+            if no_improve_cnt >= PATIENCE:
+                break
+
+        fold_scores.append(best_loss_in_fold)
     
-    train_dataset = TensorDataset(X_train_tensor, Y_train_tensor)
-    cpu_count = os.cpu_count()
-
-    # ★重要: 44コアのCPUを活用する設定 (num_workers)
-    # ローカルディスク上なのでpin_memory=Falseでも十分速いですが、Trueでも問題ありません
-    train_loader = DataLoader(
-        dataset=train_dataset, 
-        batch_size=batch_size, 
-        shuffle=True,
-        num_workers=cpu_count, # 44コアあるので16くらいまで上げてもOK
-        persistent_workers=True
-    )
-
-    for epoch in range(EPOCHS):
-        model.train()
-        for inputs, targets in train_loader:
-            optimizer.zero_grad()
-            outputs = model(inputs)
-            loss = criterion(outputs, targets)
-            if torch.isnan(loss): return float('inf')
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=GRAD_CLIP)
-            optimizer.step()
-
-    model.eval()
-    with torch.no_grad():
-        val_outputs = model(X_val_tensor)
-        val_loss = criterion(val_outputs, Y_val_tensor)
-
-    return val_loss.item()
+    return np.mean(fold_scores)
 
 if PERFORM_OPTUNA:
     print("\n" + "="*70)
