@@ -259,32 +259,38 @@ for amp in train_amp:
     for b_val, h_val in zip(B, H): X_list.append([amp, b_val]); Y_list.append([h_val])
 
 NUM_NORMAL_SAMPLES = len(X_list)
-Hb_vals, Bm_vals = np.array([]), np.array([]) 
+# ★★★ Akimaデータの読み込み処理（USE_AKIMA_DATAフラグで分岐） ★★★
+Hb_vals, Bm_vals = np.array([]), np.array([]) # プロット用に初期化
 
 if USE_AKIMA_DATA:
     print(f"\nAkima補間データを読み込んでいます...")
     try:
+        # 1. データを読み込む
         df_akima_full = pd.read_excel(akima_excel_path, sheet_name='Interpolated Data', engine='openpyxl')
+        
+        # 2. 無効なデータ（NaN, inf）を削除する
+        initial_rows = len(df_akima_full)
         df_akima_full.replace([np.inf, -np.inf], np.nan, inplace=True)
         df_akima_full.dropna(subset=['amp_Bm', 'amp_Hb'], inplace=True)
+        final_rows = len(df_akima_full)
         
-        target_regression_amps = np.round(np.arange(Bmreg_min, Bmreg_max + 1e-8, step), 2)
-        mask = np.any([np.isclose(df_akima_full['amp_Bm'], amp, rtol=1e-5, atol=1e-2) for amp in target_regression_amps], axis=0)
-        df_akima_filtered = df_akima_full[mask].copy()
-
-        if 0.05 in target_regression_amps:
-            has_005 = np.any(np.isclose(df_akima_filtered['amp_Bm'], 0.05, rtol=1e-5, atol=1e-2))
-            if not has_005:
-                idx_05 = df_akima_full['amp_Bm'].sub(0.05).abs().idxmin()
-                if np.isclose(df_akima_full.loc[idx_05, 'amp_Bm'], 0.05, rtol=1e-5, atol=1e-2):
-                    df_akima_filtered = pd.concat([df_akima_filtered, df_akima_full.loc[[idx_05]]]).drop_duplicates().reset_index(drop=True)
-
-        print(f"  - Akimaデータ: {len(df_akima_filtered)}点の頂点データを使用します。")
+        if initial_rows > final_rows:
+            print(f"  - 警告: Akimaデータから{initial_rows - final_rows}個の無効な行（NaNまたはinf）を削除しました.")
+        
+        # ★★★ 修正箇所: フィルタリングをせず、全データをそのままコピーする ★★★
+        df_akima_filtered = df_akima_full.copy()
+        
+        print(f"  - Akimaデータ: フィルタリングを行わず、全{len(df_akima_filtered)}点の頂点データを使用します。")
+        
+        # 4. 学習データリストに追加
         Hb_vals = df_akima_filtered['amp_Hb'].values
         Bm_vals = df_akima_filtered['amp_Bm'].values
         for Hb, Bm in zip(Hb_vals, Bm_vals):
+            # 第1象限 (Bm, Bm) -> Hb
             X_list.append([Bm, Bm]); Y_list.append([Hb])
+            # 第3象限 (Bm, -Bm) -> -Hb
             X_list.append([Bm, -Bm]); Y_list.append([-Hb])
+            
     except FileNotFoundError:
         print(f"🔴 警告: Akimaデータファイルが見つかりません。")
 else:
