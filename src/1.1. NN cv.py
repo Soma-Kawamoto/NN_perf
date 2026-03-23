@@ -392,19 +392,19 @@ def objective(trial: optuna.trial.Trial) -> float:
     """Optunaの目的関数 (Akimaも検証データに含める 5-Fold CV版)"""
     # --- 1. ハイパーパラメータの提案 ---
     lr = trial.suggest_float("lr", LR_RANGE[0], LR_RANGE[1], log=True)
-    n_layers = trial.suggest_int("n_layers", 1, 4)
+    n_layers = trial.suggest_int("n_layers", 4, 4)
     hidden_layers = [trial.suggest_int(f"n_units_l{i}", 32, 256) for i in range(n_layers)]
-    activation_str = trial.suggest_categorical("activation", ["relu", "tanh"])
+    activation_str = trial.suggest_categorical("activation", ["tanh"])
     batch_size = trial.suggest_categorical("batch_size", [32, 64, 128, 256])
     
-    PATIENCE = 500 
+    PATIENCE = 4000 
     activation_func = get_activation_function(activation_str)
     criterion = RMSELoss() if LossFunc == 'RMSE' else nn.MSELoss()
     
     # --- 2. K-Fold CV の準備 (全データ X_train_scaled を対象にする) ---
     K_SPLITS = 5
     kf = KFold(n_splits=K_SPLITS, shuffle=True, random_state=42)
-    fold_scores = [] 
+    fold_scores = []
 
     # --- 3. Foldごとのループ (全データから学習用と検証用を分割) ---
     for fold, (train_idx, val_idx) in enumerate(kf.split(X_train_scaled)):
@@ -477,7 +477,7 @@ if PERFORM_OPTUNA:
     
     # === ★★★ 【修正】ZドライブのSQLiteを使用する設定 ★★★ ===
     # 元のMySQL設定はコメントアウトしました
-    db_url = "mysql+pymysql://optuna:Kysym-18459@172.20.145.93/optuna_db"
+    db_url = "sqlite:///For_Conference_Presentation.db"
     
     # Zドライブのパスを指定 (WindowsのZ:\distributed_search_result.db)
     # db_path = "/mnt/z/distributed_search_result.db"
@@ -502,7 +502,14 @@ if PERFORM_OPTUNA:
         print("\n\n⛔ 中断されました。"); exit()
         
     # SQLiteでも load_if_exists=True でOK
-    study = optuna.create_study(direction="minimize", storage=db_url, study_name=study_name, load_if_exists=True)
+    # 完全に無効化する場合
+    study = optuna.create_study(
+        direction="minimize", 
+        storage=db_url, 
+        study_name=study_name, 
+        load_if_exists=True,
+        pruner=optuna.pruners.NopPruner()  # これを追加
+    )
     
     study.optimize(objective, n_trials=N_TRIALS)
 

@@ -1,5 +1,5 @@
 import configparser
-import pandas as pd  # pdとしてインポートするのが一般的です
+import pandas as pd  # pdとしてインポートするのが一般的
 import numpy as np
 from pathlib import Path
 
