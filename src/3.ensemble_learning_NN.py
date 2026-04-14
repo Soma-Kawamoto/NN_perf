@@ -180,7 +180,7 @@ if PERFORM_TRAINING:
         
         model = FullyConnectedNN(2, 1, HIDDEN_LAYERS, get_activation_function(activation_func_str)).to(device)
         optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE)
-        criterion = RMSELoss()
+        criterion = nn.MSELoss()
         loader = DataLoader(TensorDataset(X_boot, Y_boot), batch_size=BATCH_SIZE, shuffle=True)
         
         model.train()
