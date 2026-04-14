@@ -33,18 +33,19 @@ NUM_MODELS = 10  # アンサンブルするモデルの数（分類機の数）
 # --- 設定ファイルの読み込み ---
 # ==============================================================================
 try:
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    # 修正ポイント：src -> 1.Training Data Folder -> NN_perf(ルート) と2段階戻る
-    base_dir = os.path.dirname(os.path.dirname(script_dir))
+    # __file__ は現在のスクリプト(src/3.ensemble_learning_NN.py)の絶対パス
+    script_dir = os.path.dirname(os.path.abspath(__file__)) # -> ~/NN_perf/src
+    
+    # 【修正ポイント】src/ に移動したので、1段階戻るだけでルート(NN_perf)に到達します
+    base_dir = os.path.dirname(script_dir) # -> ~/NN_perf
 except NameError:
     script_dir = os.getcwd()
     base_dir = os.path.dirname(script_dir)
 
-# 確認用のデバッグプリント
 print(f"📂 プロジェクトルートを特定しました: {base_dir}")
 
-# 修正ポイント：1.Training Data Folder/src からルートに戻るには ".." が2つ必要
-config_path = os.path.join(script_dir, "..", "..", "config", "1. NN.ini")
+# 【修正ポイント】script_dir(src) から1つ戻って config フォルダを見るように変更
+config_path = os.path.join(script_dir, "..", "config", "1. NN.ini")
 
 # パスが本当に正しいか確認するためのデバッグ用表示
 print(f"🔍 設定ファイルを読み込んでいます: {os.path.abspath(config_path)}")
