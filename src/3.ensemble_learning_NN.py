@@ -167,6 +167,9 @@ models = []
 if PERFORM_TRAINING:
     print(f"\n🚀 {NUM_MODELS} 個のモデルのバギングを開始します...")
     for i in range(NUM_MODELS):
+        # ★ 追加：現在のモデル番号を表示
+        print(f"\n--- Model {i+1}/{NUM_MODELS} Training Start ---")
+        
         indices = np.random.choice(len(X_train_scaled), len(X_train_scaled), replace=True)
         X_boot = torch.FloatTensor(X_train_scaled[indices]).to(device)
         Y_boot = torch.FloatTensor(Y_train_scaled[indices]).to(device)
@@ -174,6 +177,7 @@ if PERFORM_TRAINING:
         optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE)
         criterion = RMSELoss()
         loader = DataLoader(TensorDataset(X_boot, Y_boot), batch_size=BATCH_SIZE, shuffle=True)
+        
         model.train()
         for epoch in range(EPOCHS):
             for inputs, targets in loader:
@@ -182,8 +186,14 @@ if PERFORM_TRAINING:
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=GRAD_CLIP)
                 optimizer.step()
+            
+            # ★ 追加：100エポックごとに進捗を表示
+            if (epoch + 1) % 100 == 0 or epoch == 0:
+                print(f"  Model {i+1} | Epoch [{epoch+1}/{EPOCHS}] | Loss: {loss.item():.6f}")
+        
         torch.save(model.to('cpu').state_dict(), f"{model_weights_base}_{i}.pth")
         models.append(model)
+        print(f"✅ Model {i+1} Training Completed.") # 各モデル終了時の通知
     with open(scaler_X_path, 'wb') as f: pickle.dump(scaler_X, f)
     with open(scaler_Y_path, 'wb') as f: pickle.dump(scaler_Y, f)
 else:
