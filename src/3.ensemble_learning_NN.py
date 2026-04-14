@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-NN Ensemble Regression Script (Bagging)
-- Excel Output compatible with GPR format
-- Variance Summary implementation
+全結合型ニューラルネットワーク (NN) によるアンサンブル学習（バギング）
+B-H ヒステリシス回帰スクリプト (GPRフォーマット互換・完全版)
 """
 import os
 import numpy as np
@@ -18,8 +17,6 @@ import pickle
 import japanize_matplotlib
 from datetime import datetime
 import configparser
-from typing import List, Tuple
-import time
 
 # --- プロット設定 ---
 plt.rcParams["font.family"] = "Times New Roman"
@@ -40,7 +37,13 @@ except NameError:
     script_dir = os.getcwd()
     base_dir = os.path.dirname(script_dir)
 
+print(f"📂 プロジェクトルート: {base_dir}")
 config_path = os.path.join(base_dir, "config", "1. NN.ini")
+
+if not os.path.exists(config_path):
+    print(f"🔴 エラー: 設定ファイルが見つかりません: {config_path}")
+    exit()
+
 config = configparser.ConfigParser()
 config.read(config_path, encoding='utf-8')
 
@@ -57,7 +60,6 @@ LEARNING_RATE = config.getfloat('training', 'LEARNING_RATE')
 EPOCHS = config.getint('training', 'EPOCHS')
 BATCH_SIZE = config.getint('training', 'BATCH_SIZE')
 GRAD_CLIP = config.getfloat('training', 'GRAD_CLIP')
-LossFunc = config.get('training', 'LOSS_FUNC')
 
 Bmtrain_min = config.getfloat('data', 'Bmtrain_min')
 Bmtrain_max = config.getfloat('data', 'Bmtrain_max')
@@ -69,13 +71,14 @@ Bmreg_min = config.getfloat('regression', 'Bmreg_min')
 Bmreg_max = config.getfloat('regression', 'Bmreg_max')
 step = config.getfloat('regression', 'step')
 
-# パス設定
+# --- パス設定 ---
 akima_excel_path = os.path.join(base_dir, "2.Normal Magnetization Curve Extraction Folder", "assets", "2.Akima spline interpolation", f"Bm-Hb Curve_akima_{mat_name}_50hz.xlsx")
 input_base = os.path.join(base_dir, "1.Training Data Folder", "assets", "6.Downsampling")
 output_base = os.path.join(base_dir, "3.Answer", "NN_ensemble_results")
 model_dir = os.path.join(base_dir, "3.Answer", "NN_models_ensemble")
 truth_data_base = os.path.join(base_dir, "1.Training Data Folder", "assets", "7.reference data")
 plot_output_dir = os.path.join(output_base, mat_name, str(target_freq), "plots")
+
 os.makedirs(model_dir, exist_ok=True)
 os.makedirs(plot_output_dir, exist_ok=True)
 
@@ -84,15 +87,16 @@ scaler_X_path = os.path.join(model_dir, f"scaler_X_{mat_name}_{target_freq}hz.pk
 scaler_Y_path = os.path.join(model_dir, f"scaler_Y_{mat_name}_{target_freq}hz.pkl")
 truth_data_path = os.path.join(truth_data_base, f"summary_{mat_name}_{step}.xlsx")
 
-# ファイル名生成
+# --- ファイル名生成 ---
 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 output_filename = f"{timestamp}_Ensemble_Summary_{mat_name}_{target_freq}hz_NN.xlsx"
 rmse_out_path = os.path.join(output_base, mat_name, str(target_freq), output_filename)
 
 device = torch.device("cuda" if (USE_GPU_SETTING and torch.cuda.is_available()) else "cpu")
+print(f"💻 使用デバイス: {device}")
 
 # ==============================================================================
-# --- 関数定義 ---
+# --- クラス・関数定義 ---
 # ==============================================================================
 class RMSELoss(nn.Module):
     def __init__(self, eps=1e-6):
@@ -166,13 +170,14 @@ Y_train_scaled = scaler_Y.fit_transform(Y_train_raw)
 models = []
 if PERFORM_TRAINING:
     print(f"\n🚀 {NUM_MODELS} 個のモデルのバギングを開始します...")
+    
     for i in range(NUM_MODELS):
-        # ★ 追加：現在のモデル番号を表示
         print(f"\n--- Model {i+1}/{NUM_MODELS} Training Start ---")
         
         indices = np.random.choice(len(X_train_scaled), len(X_train_scaled), replace=True)
         X_boot = torch.FloatTensor(X_train_scaled[indices]).to(device)
         Y_boot = torch.FloatTensor(Y_train_scaled[indices]).to(device)
+        
         model = FullyConnectedNN(2, 1, HIDDEN_LAYERS, get_activation_function(activation_func_str)).to(device)
         optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE)
         criterion = RMSELoss()
@@ -180,23 +185,31 @@ if PERFORM_TRAINING:
         
         model.train()
         for epoch in range(EPOCHS):
+            epoch_loss = 0.0 # ★修正: 1エポックの合計Loss用
+            
             for inputs, targets in loader:
                 optimizer.zero_grad()
-                loss = criterion(model(inputs), targets)
+                outputs = model(inputs)
+                loss = criterion(outputs, targets)
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=GRAD_CLIP)
                 optimizer.step()
+                
+                epoch_loss += loss.item()
+                
+            avg_loss = epoch_loss / len(loader) # ★修正: エポック全体の平均Lossを計算
             
-            # ★ 追加：100エポックごとに進捗を表示
-            if (epoch + 1) % 100 == 0 or epoch == 0:
-                print(f"  Model {i+1} | Epoch [{epoch+1}/{EPOCHS}] | Loss: {loss.item():.6f}")
+            if (epoch + 1) % 500 == 0 or epoch == 0:
+                print(f"  Model {i+1} | Epoch [{epoch+1}/{EPOCHS}] | Loss: {avg_loss:.6f}")
         
         torch.save(model.to('cpu').state_dict(), f"{model_weights_base}_{i}.pth")
         models.append(model)
-        print(f"✅ Model {i+1} Training Completed.") # 各モデル終了時の通知
+        print(f"✅ Model {i+1} Training Completed.")
+        
     with open(scaler_X_path, 'wb') as f: pickle.dump(scaler_X, f)
     with open(scaler_Y_path, 'wb') as f: pickle.dump(scaler_Y, f)
 else:
+    print("\n✅ 保存済みのアンサンブルモデルを読み込みます...")
     with open(scaler_X_path, 'rb') as f: scaler_X = pickle.load(f)
     with open(scaler_Y_path, 'rb') as f: scaler_Y = pickle.load(f)
     for i in range(NUM_MODELS):
@@ -205,8 +218,9 @@ else:
         models.append(m.to(device))
 
 # ==============================================================================
-# --- 推論 & RMSE計算 ---
+# --- 推論 & 統計計算 ---
 # ==============================================================================
+print("\nアンサンブル推論と統計計算を実行中...")
 df_truth_all = pd.read_excel(truth_data_path, sheet_name=f"{target_freq}Hz", header=1)
 truth_data_blocks = [group.reset_index(drop=True) for _, group in df_truth_all.dropna(how='all').groupby(df_truth_all.isnull().all(axis=1).cumsum())]
 
@@ -216,7 +230,7 @@ comparison_sheets_data = []
 smooth_variance_data = {}
 
 for i, amp in enumerate(pred_amps):
-    # --- 個別振幅シート用の推論 ---
+    # --- 1. 個別振幅シート用の推論 ---
     num_points = int(round(2 * amp / step)) + 1
     Breg = np.linspace(-amp, amp, num_points)
     X_pred = torch.FloatTensor(scaler_X.transform(np.array([[amp, b] for b in Breg]))).to(device)
@@ -230,10 +244,10 @@ for i, amp in enumerate(pred_amps):
     
     all_preds = np.array(all_preds)
     H_mean = np.mean(all_preds, axis=0)
-    H_var = np.var(all_preds, axis=0)
-    H_std = np.std(all_preds, axis=0)
+    H_var = np.var(all_preds, axis=0) # 分散
+    H_std = np.std(all_preds, axis=0) # 標準偏差(1σ)
 
-    # RMSE計算
+    # --- 2. RMSE計算 ---
     h_ref, b_ref = np.full_like(H_mean, np.nan), np.full_like(H_mean, np.nan)
     if i < len(truth_data_blocks):
         df_ref = truth_data_blocks[i]
@@ -241,16 +255,27 @@ for i, amp in enumerate(pred_amps):
             h_ref, b_ref = df_ref['H_descending'].values, df_ref['B'].values
             rmse = np.sqrt(np.mean((h_ref - H_mean)**2))
             hb_pred = H_mean[-1]
-            rmse_results.append({'Amplitude(T)': amp, 'RMSE(H_descending)': rmse, 'Hb[A/m]': hb_pred, 'RMSE/Hb': rmse/abs(hb_pred) if hb_pred!=0 else np.nan})
+            rmse_results.append({
+                'Amplitude(T)': amp, 
+                'RMSE(H_descending)': rmse, 
+                'Hb[A/m]': hb_pred, 
+                'RMSE/Hb': rmse/abs(hb_pred) if hb_pred!=0 else np.nan
+            })
 
-    # データフレーム作成
+    # --- 3. データフレーム作成 (E〜H列の修正適用済み) ---
     df_sheet = pd.DataFrame({
-        'H_mean [A/m]': H_mean, 'B_reg [T]': Breg, 'H_ref [A/m]': h_ref, 'B_ref [T]': b_ref,
-        'H_pred_variance': H_var, 'H_pred_1sigma': H_std, 'H_pred_2sigma': H_std * 2, 'H_pred_3sigma': H_std * 3
+        'H_mean [A/m]': H_mean, 
+        'B_reg [T]': Breg, 
+        'H_ref [A/m]': h_ref, 
+        'B_ref [T]': b_ref,
+        'H_pred_variance': H_var,      # E列: 分散
+        'H_pred_1sigma': H_std,        # F列: 1σの大きさ
+        'H_pred_2sigma': H_std * 2,    # G列: 2σの大きさ
+        'H_pred_3sigma': H_std * 3     # H列: 3σの大きさ
     })
     comparison_sheets_data.append({'amp': amp, 'df': df_sheet})
 
-    # --- variance_summary用の滑らかな推論 (200分割) ---
+    # --- 4. variance_summary用の滑らかな推論 (200分割) ---
     B_dense = np.linspace(-amp, amp, 200)
     X_dense = torch.FloatTensor(scaler_X.transform(np.array([[amp, b] for b in B_dense]))).to(device)
     dense_preds = []
@@ -266,11 +291,18 @@ for i, amp in enumerate(pred_amps):
 # --- Excel出力 ---
 # ==============================================================================
 os.makedirs(os.path.dirname(rmse_out_path), exist_ok=True)
+print(f"\nExcelファイルへの書き込みを開始します...")
+
 with pd.ExcelWriter(rmse_out_path, engine='openpyxl') as writer:
+    # 1. Infoシート
     create_info_df().to_excel(writer, sheet_name='Info', index=False)
-    pd.DataFrame(rmse_results).to_excel(writer, sheet_name='RMSE_Summary', index=False)
+    # 2. RMSE_Summaryシート
+    if rmse_results:
+        pd.DataFrame(rmse_results).to_excel(writer, sheet_name='RMSE_Summary', index=False)
+    # 3. 各振幅シート
     for item in comparison_sheets_data:
         item['df'].to_excel(writer, sheet_name=f"{item['amp']:.2f}T", index=False)
+    # 4. variance_summaryシート
     pd.DataFrame(smooth_variance_data).to_excel(writer, sheet_name='variance_summary', index=False)
 
 print(f"\n✅ 全工程完了。保存先:\n{rmse_out_path}")
