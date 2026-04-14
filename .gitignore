@@ -101,4 +101,5 @@ venv.bak/
 # configフォルダ内の特定の.iniファイルを無視
 config/*.ini
 
-# docs/ は追跡するため、ここから削除しました
+# docs/ は追跡するため、ここから削除しましたFor_Conference_Presentation.db
+optuna_db/
